@@ -56,15 +56,18 @@ class CtGovSettings(BaseModel):
     rate_limit: float = Field(10.0, description="Soft rate limit in requests per second")
 
 
+env_path = os.path.join(os.getcwd(), ".env")
 class Settings(BaseSettings):
     """Main configuration settings."""
 
+
     model_config = SettingsConfigDict(
-        env_file=".env", 
+        env_file=env_path, 
         env_file_encoding="utf-8", 
-        case_sensitive=True,
+        case_sensitive=False,
         extra="ignore"  # Allow extra fields from environment variables
     )
+    
 
     # Study extraction parameters
     disease: str = Field(
@@ -79,6 +82,7 @@ class Settings(BaseSettings):
     api_keys: APIKeys = Field(default_factory=lambda: APIKeys(
         gemini=os.environ.get("GEMINI_API_KEY"),
     ))
+
 
     # Paths
     paths: Paths = Field(default_factory=Paths)
@@ -101,3 +105,6 @@ class Settings(BaseSettings):
 
 # Create singleton instance
 settings = Settings() 
+print("settings.disease:", settings.disease)
+print("settings.year_start:", settings.year_start)
+print("settings.year_end:", settings.year_end)
