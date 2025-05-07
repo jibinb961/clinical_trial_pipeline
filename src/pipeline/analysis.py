@@ -232,6 +232,74 @@ def generate_yearly_modality_data(
     return pivot_df
 
 
+def plot_top_sponsors(df: pd.DataFrame, output_dir: Optional[Path] = None, top_n: int = 10, timestamp: Optional[str] = None):
+    """Bar chart of top sponsors by number of trials."""
+    if 'lead_sponsor' not in df.columns or df['lead_sponsor'].dropna().empty:
+        logger.warning("'lead_sponsor' column missing or empty, skipping top sponsors plot.")
+        return
+    if output_dir is None:
+        output_dir = settings.paths.figures
+    os.makedirs(output_dir, exist_ok=True)
+    if timestamp is None:
+        timestamp = get_timestamp()
+    sponsor_counts = df['lead_sponsor'].value_counts().head(top_n)
+    plt.figure(figsize=(10, 6))
+    sponsor_counts.plot(kind='bar')
+    plt.title(f"Top {top_n} Sponsors by Number of Trials")
+    plt.xlabel("Sponsor")
+    plt.ylabel("Number of Trials")
+    plt.xticks(rotation=45, ha="right")
+    plt.tight_layout()
+    plt.savefig(output_dir / f"top_{top_n}_sponsors_{timestamp}.png", dpi=300)
+    plt.close()
+
+
+def plot_status_distribution(df: pd.DataFrame, output_dir: Optional[Path] = None, timestamp: Optional[str] = None):
+    """Pie chart of trial status distribution."""
+    if 'overall_status' not in df.columns or df['overall_status'].dropna().empty:
+        logger.warning("'overall_status' column missing or empty, skipping status distribution plot.")
+        return
+    if output_dir is None:
+        output_dir = settings.paths.figures
+    os.makedirs(output_dir, exist_ok=True)
+    if timestamp is None:
+        timestamp = get_timestamp()
+    status_counts = df['overall_status'].value_counts()
+    plt.figure(figsize=(8, 6))
+    status_counts.plot(kind='pie', autopct='%1.1f%%', startangle=90)
+    plt.title("Trial Status Distribution")
+    plt.ylabel("")
+    plt.tight_layout()
+    plt.savefig(output_dir / f"trial_status_distribution_{timestamp}.png", dpi=300)
+    plt.close()
+
+
+def plot_enrollment_by_sponsor(df: pd.DataFrame, output_dir: Optional[Path] = None, top_n: int = 5, timestamp: Optional[str] = None):
+    """Boxplot of enrollment sizes by top sponsors."""
+    if 'lead_sponsor' not in df.columns or 'enrollment_count' not in df.columns:
+        logger.warning("'lead_sponsor' or 'enrollment_count' column missing, skipping enrollment by sponsor plot.")
+        return
+    if output_dir is None:
+        output_dir = settings.paths.figures
+    os.makedirs(output_dir, exist_ok=True)
+    if timestamp is None:
+        timestamp = get_timestamp()
+    top_sponsors = df['lead_sponsor'].value_counts().head(top_n).index
+    filtered = df[df['lead_sponsor'].isin(top_sponsors) & df['enrollment_count'].notna()]
+    if filtered.empty:
+        logger.warning("No data for enrollment by sponsor plot after filtering.")
+        return
+    plt.figure(figsize=(10, 6))
+    filtered.boxplot(column='enrollment_count', by='lead_sponsor', grid=False)
+    plt.title(f"Enrollment Size by Top {top_n} Sponsors")
+    plt.suptitle("")
+    plt.xlabel("Sponsor")
+    plt.ylabel("Enrollment Count")
+    plt.tight_layout()
+    plt.savefig(output_dir / f"enrollment_by_top_{top_n}_sponsors_{timestamp}.png", dpi=300)
+    plt.close()
+
+
 @log_execution_time
 def create_plots(
     df: pd.DataFrame, output_dir: Optional[Path] = None
@@ -425,6 +493,115 @@ def create_plots(
     except Exception as e:
         logger.error(f"Error creating enrollment distribution plot: {e}")
     
+    # Add: Top Sponsors (Plotly)
+    try:
+        if 'lead_sponsor' in df.columns and not df['lead_sponsor'].dropna().empty:
+            sponsor_counts = df['lead_sponsor'].value_counts().head(10).reset_index()
+            sponsor_counts.columns = ['sponsor', 'count']
+            fig_sponsors = px.bar(
+                sponsor_counts,
+                x='sponsor',
+                y='count',
+                title='Top 10 Sponsors by Number of Trials',
+                labels={'sponsor': 'Sponsor', 'count': 'Number of Trials'},
+            )
+            fig_sponsors.update_layout(
+                autosize=True,
+                height=600,
+                xaxis_tickangle=-45,
+                annotations=[
+                    dict(
+                        text=caption,
+                        showarrow=False,
+                        xref="paper",
+                        yref="paper",
+                        x=0.5,
+                        y=-0.15,
+                        font=dict(size=10),
+                    )
+                ],
+            )
+            plots["top_sponsors"] = fig_sponsors
+            fig_sponsors.write_image(output_dir / f"top_sponsors_{timestamp}.svg")
+            fig_sponsors.write_html(output_dir / f"top_sponsors_{timestamp}.html")
+        else:
+            logger.warning("Skipping top sponsors plot: 'lead_sponsor' column missing or empty.")
+    except Exception as e:
+        logger.error(f"Error creating top sponsors plot: {e}")
+
+    # Add: Status Distribution (Plotly)
+    try:
+        if 'overall_status' in df.columns and not df['overall_status'].dropna().empty:
+            status_counts = df['overall_status'].value_counts().reset_index()
+            status_counts.columns = ['status', 'count']
+            fig_status = px.pie(
+                status_counts,
+                names='status',
+                values='count',
+                title='Trial Status Distribution',
+            )
+            fig_status.update_layout(
+                autosize=True,
+                height=600,
+                annotations=[
+                    dict(
+                        text=caption,
+                        showarrow=False,
+                        xref="paper",
+                        yref="paper",
+                        x=0.5,
+                        y=-0.15,
+                        font=dict(size=10),
+                    )
+                ],
+            )
+            plots["status_distribution"] = fig_status
+            fig_status.write_image(output_dir / f"status_distribution_{timestamp}.svg")
+            fig_status.write_html(output_dir / f"status_distribution_{timestamp}.html")
+        else:
+            logger.warning("Skipping status distribution plot: 'overall_status' column missing or empty.")
+    except Exception as e:
+        logger.error(f"Error creating status distribution plot: {e}")
+
+    # Add: Enrollment by Sponsor (Plotly)
+    try:
+        if 'lead_sponsor' in df.columns and 'enrollment_count' in df.columns:
+            top_sponsors = df['lead_sponsor'].value_counts().head(5).index
+            filtered = df[df['lead_sponsor'].isin(top_sponsors) & df['enrollment_count'].notna()]
+            if not filtered.empty:
+                fig_enroll_sponsor = px.box(
+                    filtered,
+                    x='lead_sponsor',
+                    y='enrollment_count',
+                    title='Enrollment Size by Top 5 Sponsors',
+                    labels={'lead_sponsor': 'Sponsor', 'enrollment_count': 'Enrollment Count'},
+                )
+                fig_enroll_sponsor.update_layout(
+                    autosize=True,
+                    height=600,
+                    xaxis_tickangle=-45,
+                    annotations=[
+                        dict(
+                            text=caption,
+                            showarrow=False,
+                            xref="paper",
+                            yref="paper",
+                            x=0.5,
+                            y=-0.15,
+                            font=dict(size=10),
+                        )
+                    ],
+                )
+                plots["enrollment_by_sponsor"] = fig_enroll_sponsor
+                fig_enroll_sponsor.write_image(output_dir / f"enrollment_by_sponsor_{timestamp}.svg")
+                fig_enroll_sponsor.write_html(output_dir / f"enrollment_by_sponsor_{timestamp}.html")
+            else:
+                logger.warning("No data for enrollment by sponsor plot after filtering.")
+        else:
+            logger.warning("Skipping enrollment by sponsor plot: 'lead_sponsor' or 'enrollment_count' column missing.")
+    except Exception as e:
+        logger.error(f"Error creating enrollment by sponsor plot: {e}")
+    
     logger.info(f"Created {len(plots)} plots")
     return plots
 
@@ -540,6 +717,11 @@ def generate_static_matplotlib_plots(
             logger.warning("Skipping top targets plot: 'targets' column missing")
     except Exception as e:
         logger.error(f"Error creating top targets plot: {e}")
+    
+    # Add new static plots
+    plot_top_sponsors(df, output_dir, top_n=10, timestamp=timestamp)
+    plot_status_distribution(df, output_dir, timestamp=timestamp)
+    plot_enrollment_by_sponsor(df, output_dir, top_n=5, timestamp=timestamp)
     
     logger.info("Static plots generated")
 
