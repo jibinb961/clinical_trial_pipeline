@@ -324,13 +324,7 @@ def apply_enrichment_to_trials(
     trials_df: pd.DataFrame, drug_info: Dict[str, Dict[str, str]]
 ) -> pd.DataFrame:
     """Apply drug enrichment information to the trials DataFrame.
-    
-    Args:
-        trials_df: DataFrame with clinical trial data
-        drug_info: Dictionary mapping drug names to their enrichment information
-        
-    Returns:
-        Enriched DataFrame
+    Adds modalities, targets, and enrichment_sources columns.
     """
     # STEP 8: Apply enrichment data to trials DataFrame
     logger.info("Applying drug enrichment data to trials DataFrame")
@@ -338,43 +332,66 @@ def apply_enrichment_to_trials(
     # Create a copy to avoid modifying the original
     enriched_df = trials_df.copy()
     
-    # Add columns for modality and target if needed
+    # Add columns for modality, target, and source if needed
     if "modalities" not in enriched_df.columns:
         enriched_df["modalities"] = None
     if "targets" not in enriched_df.columns:
         enriched_df["targets"] = None
+    if "enrichment_sources" not in enriched_df.columns:
+        enriched_df["enrichment_sources"] = None
     
-    # Function to extract modalities and targets for a list of interventions
-    def extract_enrichment(interventions: List[str]) -> Tuple[List[str], List[str]]:
+    # Function to extract modalities, targets, and sources for a list of interventions
+    def extract_enrichment(interventions: list) -> tuple:
         if not interventions or not isinstance(interventions, list):
-            return [], []
-        
-        modalities = []
-        targets = []
-        
+            return [], [], []
+        modalities, targets, sources = [], [], []
         for drug in interventions:
-            if drug in drug_info:
-                info = drug_info[drug]
-                modalities.append(info.get("modality", "Unknown"))
-                targets.append(info.get("target", "Unknown"))
-        
-        return modalities, targets
+            info = drug_info.get(drug, {"modality": "Unknown", "target": "Unknown", "source": "Unknown"})
+            modalities.append(info.get("modality", "Unknown"))
+            targets.append(info.get("target", "Unknown"))
+            sources.append(info.get("source", "Unknown"))
+        return modalities, targets, sources
     
     # Apply the extraction to each row
     for i, row in enriched_df.iterrows():
         interventions = row.get("intervention_names")
         if interventions:
-            modalities, targets = extract_enrichment(interventions)
+            modalities, targets, sources = extract_enrichment(interventions)
             enriched_df.at[i, "modalities"] = modalities
             enriched_df.at[i, "targets"] = targets
+            enriched_df.at[i, "enrichment_sources"] = sources
     
     # Get timestamp for filename
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
     
     # Save the enriched DataFrame
     output_path = settings.paths.processed_data / f"trials_enriched_{timestamp}.parquet"
     enriched_df.to_parquet(output_path, index=False)
+    logger.info(f"Saved enriched DataFrame to {output_path}")
     
-    logger.info(f"Saved enriched trials data to {output_path}")
+    # Generate enrichment report CSV
+    try:
+        rows = []
+        for _, row in enriched_df.iterrows():
+            nct_id = row.get('nct_id', '')
+            for drug, modality, target, source in zip(
+                row.get('intervention_names', []),
+                row.get('modalities', []),
+                row.get('targets', []),
+                row.get('enrichment_sources', [])
+            ):
+                rows.append({
+                    "nct_id": nct_id,
+                    "drug": drug,
+                    "modality": modality,
+                    "target": target,
+                    "source": source
+                })
+        report_df = pd.DataFrame(rows)
+        report_path = settings.paths.processed_data / f"enrichment_report_{timestamp}.csv"
+        report_df.to_csv(report_path, index=False)
+        logger.info(f"Saved enrichment report to {report_path}")
+    except Exception as e:
+        logger.error(f"Error generating enrichment report: {e}")
     
     return enriched_df 
