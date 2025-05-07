@@ -136,52 +136,30 @@ def generate_summary_statistics(
 def generate_modality_counts(
     df: pd.DataFrame,
 ) -> pd.DataFrame:
-    """Generate counts of trials by modality.
-    
-    Args:
-        df: DataFrame with clinical trial data
-        
-    Returns:
-        DataFrame with modality counts
-    """
-    # STEP 2: Generate modality counts
+    """Generate counts of trials by modality (case-insensitive)."""
     logger.info("Generating modality counts")
-    
-    # Explode the modalities column to get one row per modality
     exploded_df = df.explode("modalities")
-    
-    # Count by modality
+    # Standardize case
+    if 'modalities' in exploded_df.columns:
+        exploded_df["modalities"] = exploded_df["modalities"].str.lower()
     modality_counts = exploded_df["modalities"].value_counts().reset_index()
     modality_counts.columns = ["modality", "count"]
-    
     return modality_counts
 
 
 def generate_target_counts(
     df: pd.DataFrame,
 ) -> pd.DataFrame:
-    """Generate counts of trials by target.
-    
-    Args:
-        df: DataFrame with clinical trial data
-        
-    Returns:
-        DataFrame with target counts
-    """
-    # STEP 3: Generate target counts
+    """Generate counts of trials by target (case-insensitive)."""
     logger.info("Generating target counts")
-    
-    # Explode the targets column to get one row per target
     exploded_df = df.explode("targets")
-    
-    # Get top targets by count
+    # Standardize case
+    if 'targets' in exploded_df.columns:
+        exploded_df["targets"] = exploded_df["targets"].str.lower()
     target_counts = exploded_df["targets"].value_counts().reset_index()
     target_counts.columns = ["target", "count"]
-    
-    # Filter out "Unknown" targets and limit to top 20
-    target_counts = target_counts[target_counts["target"] != "Unknown"]
+    target_counts = target_counts[target_counts["target"] != "unknown"]
     target_counts = target_counts.head(20)
-    
     return target_counts
 
 
@@ -638,7 +616,7 @@ def generate_static_matplotlib_plots(
             
             if not modality_counts.empty:
                 # Filter out "Unknown" and sort by count
-                modality_counts = modality_counts[modality_counts["modality"] != "Unknown"]
+                modality_counts = modality_counts[modality_counts["modality"] != "unknown"]
                 modality_counts = modality_counts.sort_values("count", ascending=False).head(10)
                 
                 plt.figure(figsize=(10, 6))
