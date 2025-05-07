@@ -1,0 +1,68 @@
+[tool.poetry]
+name = "clinical-trials-pipeline"
+version = "0.1.0"
+description = "End-to-end data pipeline for extracting, enriching, analyzing, and visualizing clinical trial data"
+authors = ["Your Name <your.email@example.com>"]
+license = "MIT"
+readme = "README.md"
+packages = [{include = "src"}]
+
+[tool.poetry.dependencies]
+python = "^3.12"
+aiohttp = "^3.9.1"
+tenacity = "^8.2.3"
+pandas = "^2.1.3"
+numpy = "1.26.3"
+pyarrow = "^14.0.1"
+tqdm = "^4.66.1"
+prefect = "^2.14.4"
+plotly = "^5.18.0"
+matplotlib = "^3.8.2"
+google-generativeai = "0.5.2"
+pydantic = "^2.5.2"
+pydantic-settings = "^2.1.0"
+python-dotenv = "^1.0.0"
+fastparquet = "^2023.10.1"
+sqlalchemy = "^2.0.23"
+diagrams = "^0.23.3"
+streamlit = "^1.28.2"
+chembl_webresource_client = "^0.10.8"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.4.3"
+pytest-asyncio = "^0.21.1"
+ruff = "^0.1.5"
+black = "^23.11.0"
+mypy = "^1.7.0"
+types-requests = "^2.31.0.10"
+types-tqdm = "^4.66.0.2"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.black]
+line-length = 88
+target-version = ["py312"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+select = ["E", "F", "I", "N", "B", "A", "COM", "C4", "UP", "W"]
+ignore = []
+
+[tool.mypy]
+python_version = "3.12"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = true
+no_implicit_optional = true
+strict_optional = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+python_functions = "test_*" 

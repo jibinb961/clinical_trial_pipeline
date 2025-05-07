@@ -1,0 +1,797 @@
+"""Analysis module for generating tables, plots, and insights.
+
+This module contains functions for analyzing clinical trial data,
+generating statistical summaries, and creating visualizations.
+"""
+
+import os
+import textwrap
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import plotly.express as px
+from plotly.graph_objects import Figure as PlotlyFigure
+
+from src.pipeline.config import settings
+from src.pipeline.utils import get_timestamp, log_execution_time, logger
+
+
+def get_year_from_date(date_str: Optional[str]) -> Optional[int]:
+    """Extract year from date string.
+    
+    Args:
+        date_str: Date string in ISO format
+        
+    Returns:
+        Year as integer or None
+    """
+    if not date_str:
+        return None
+    try:
+        return int(date_str.split("-")[0])
+    except (ValueError, AttributeError, IndexError):
+        return None
+
+
+def generate_summary_statistics(
+    df: pd.DataFrame,
+) -> Dict[str, Any]:
+    """Generate summary statistics for clinical trials data.
+    
+    Args:
+        df: DataFrame with clinical trial data
+        
+    Returns:
+        Dictionary with summary statistics
+    """
+    # STEP 1: Generate summary statistics
+    logger.info("Generating summary statistics")
+    
+    stats = {}
+    
+    # Overall counts
+    stats["total_trials"] = len(df)
+    
+    # Make sure required columns exist to prevent KeyError
+    if 'overall_status' in df.columns:
+        stats["completed_trials"] = df[df["overall_status"] == "Completed"].shape[0]
+        stats["ongoing_trials"] = df[df["overall_status"].isin(["Recruiting", "Active, not recruiting"])].shape[0]
+    else:
+        logger.warning("Column 'overall_status' not found in DataFrame. Using zeros for status counts.")
+        stats["completed_trials"] = 0
+        stats["ongoing_trials"] = 0
+    
+    # Enrollment statistics - check if column exists
+    if 'enrollment_count' in df.columns:
+        enrollment_column = 'enrollment_count'
+    elif 'enrollment' in df.columns:
+        enrollment_column = 'enrollment'
+    else:
+        enrollment_column = None
+        
+    if enrollment_column and not df[enrollment_column].empty:
+        enrollment_stats = df[enrollment_column].describe()
+        stats["enrollment"] = {
+            "mean": enrollment_stats["mean"],
+            "median": enrollment_stats["50%"],
+            "min": enrollment_stats["min"],
+            "max": enrollment_stats["max"],
+            "q1": enrollment_stats["25%"],
+            "q3": enrollment_stats["75%"],
+        }
+    else:
+        logger.warning("Enrollment data not available or empty")
+        stats["enrollment"] = {
+            "mean": 0,
+            "median": 0,
+            "min": 0,
+            "max": 0,
+            "q1": 0,
+            "q3": 0,
+        }
+    
+    # Duration statistics - check if column exists
+    if 'duration_days' in df.columns and not df['duration_days'].dropna().empty:
+        duration_stats = df["duration_days"].dropna().describe()
+        stats["duration_days"] = {
+            "mean": duration_stats["mean"],
+            "median": duration_stats["50%"],
+            "min": duration_stats["min"],
+            "max": duration_stats["max"],
+            "q1": duration_stats["25%"],
+            "q3": duration_stats["75%"],
+        }
+    else:
+        logger.warning("Duration data not available or empty")
+        stats["duration_days"] = {
+            "mean": 0,
+            "median": 0,
+            "min": 0,
+            "max": 0,
+            "q1": 0,
+            "q3": 0,
+        }
+    
+    # Counts by phase - check if column exists
+    phase_column = None
+    for col in ['study_phase', 'phase']:
+        if col in df.columns:
+            phase_column = col
+            break
+            
+    if phase_column and not df[phase_column].empty:
+        stats["phase_counts"] = df[phase_column].value_counts().to_dict()
+    else:
+        logger.warning("Phase data not available or empty")
+        stats["phase_counts"] = {}
+    
+    return stats
+
+
+def generate_modality_counts(
+    df: pd.DataFrame,
+) -> pd.DataFrame:
+    """Generate counts of trials by modality.
+    
+    Args:
+        df: DataFrame with clinical trial data
+        
+    Returns:
+        DataFrame with modality counts
+    """
+    # STEP 2: Generate modality counts
+    logger.info("Generating modality counts")
+    
+    # Explode the modalities column to get one row per modality
+    exploded_df = df.explode("modalities")
+    
+    # Count by modality
+    modality_counts = exploded_df["modalities"].value_counts().reset_index()
+    modality_counts.columns = ["modality", "count"]
+    
+    return modality_counts
+
+
+def generate_target_counts(
+    df: pd.DataFrame,
+) -> pd.DataFrame:
+    """Generate counts of trials by target.
+    
+    Args:
+        df: DataFrame with clinical trial data
+        
+    Returns:
+        DataFrame with target counts
+    """
+    # STEP 3: Generate target counts
+    logger.info("Generating target counts")
+    
+    # Explode the targets column to get one row per target
+    exploded_df = df.explode("targets")
+    
+    # Get top targets by count
+    target_counts = exploded_df["targets"].value_counts().reset_index()
+    target_counts.columns = ["target", "count"]
+    
+    # Filter out "Unknown" targets and limit to top 20
+    target_counts = target_counts[target_counts["target"] != "Unknown"]
+    target_counts = target_counts.head(20)
+    
+    return target_counts
+
+
+def generate_yearly_modality_data(
+    df: pd.DataFrame,
+) -> pd.DataFrame:
+    """Generate data for yearly modality trends.
+    
+    Args:
+        df: DataFrame with clinical trial data
+        
+    Returns:
+        DataFrame with yearly modality data
+    """
+    # STEP 4: Generate yearly modality data
+    logger.info("Generating yearly modality data")
+    
+    # Check if required columns exist
+    if 'start_date' not in df.columns or 'modalities' not in df.columns or df.empty:
+        logger.warning("Cannot generate yearly modality data: missing required columns or empty DataFrame")
+        # Return an empty DataFrame with expected structure
+        return pd.DataFrame(columns=['year'])
+    
+    # Extract year from start date
+    df_with_year = df.copy()
+    df_with_year["year"] = df_with_year["start_date"].apply(get_year_from_date)
+    
+    # Filter rows with valid year and modalities
+    df_with_year = df_with_year.dropna(subset=["year", "modalities"])
+    
+    # If after filtering we have no data, return empty DataFrame
+    if df_with_year.empty:
+        logger.warning("No valid data for yearly modality analysis after filtering")
+        return pd.DataFrame(columns=['year'])
+    
+    # Explode modalities to get one row per modality per trial
+    exploded_df = df_with_year.explode("modalities")
+    
+    # Group by year and modality to count trials
+    yearly_modality = exploded_df.groupby(["year", "modalities"]).size().reset_index()
+    yearly_modality.columns = ["year", "modality", "count"]
+    
+    # Pivot to get modalities as columns
+    pivot_df = yearly_modality.pivot_table(
+        index="year", columns="modality", values="count", fill_value=0
+    ).reset_index()
+    
+    return pivot_df
+
+
+@log_execution_time
+def create_plots(
+    df: pd.DataFrame, output_dir: Optional[Path] = None
+) -> Dict[str, PlotlyFigure]:
+    """Create plots from clinical trial data.
+    
+    Args:
+        df: DataFrame with clinical trial data
+        output_dir: Directory to save plots (defaults to settings)
+        
+    Returns:
+        Dictionary of Plotly figures
+    """
+    # STEP 5: Create visualizations
+    logger.info("Creating plots")
+    
+    if output_dir is None:
+        output_dir = settings.paths.figures
+    os.makedirs(output_dir, exist_ok=True)
+    
+    plots = {}
+    timestamp = get_timestamp()
+    run_date = pd.Timestamp.now().strftime("%Y-%m-%d")
+    caption = f"Source: clinicaltrials.gov, retrieved {run_date}"
+    
+    # Check if DataFrame is empty
+    if df.empty:
+        logger.warning("Cannot create plots: DataFrame is empty")
+        return plots
+    
+    # 1. Stacked area chart of modality shares over time
+    try:
+        yearly_modality_data = generate_yearly_modality_data(df)
+        
+        if not yearly_modality_data.empty and len(yearly_modality_data.columns) > 1:
+            # Get all modality columns (excluding 'year')
+            modality_columns = [col for col in yearly_modality_data.columns if col != "year"]
+            
+            # Melt the DataFrame to get it in the right format for the area chart
+            melted_df = pd.melt(
+                yearly_modality_data,
+                id_vars=["year"],
+                value_vars=modality_columns,
+                var_name="modality",
+                value_name="count",
+            )
+            
+            # Create the stacked area chart
+            fig_modality = px.area(
+                melted_df,
+                x="year",
+                y="count",
+                color="modality",
+                title="Clinical Trials by Modality Over Time",
+                labels={"year": "Year", "count": "Number of Trials", "modality": "Modality"},
+            )
+            fig_modality.update_layout(
+                autosize=True,
+                height=600,
+                legend_title="Modality",
+                annotations=[
+                    dict(
+                        text=caption,
+                        showarrow=False,
+                        xref="paper",
+                        yref="paper",
+                        x=0.5,
+                        y=-0.15,
+                        font=dict(size=10),
+                    )
+                ],
+            )
+            plots["modality_over_time"] = fig_modality
+            
+            # Save as both SVG and HTML
+            fig_modality.write_image(output_dir / f"modality_over_time_{timestamp}.svg")
+            fig_modality.write_html(output_dir / f"modality_over_time_{timestamp}.html")
+        else:
+            logger.warning("Skipping modality over time plot: insufficient data")
+    except Exception as e:
+        logger.error(f"Error creating modality over time plot: {e}")
+    
+    # 2. Boxplot of trial durations by phase
+    try:
+        if 'duration_days' in df.columns and 'study_phase' in df.columns:
+            duration_data = df.dropna(subset=["duration_days", "study_phase"]).copy()
+            
+            if not duration_data.empty:
+                # Simplify phases for better visualization
+                phase_mapping = {
+                    "Phase 1": "Phase 1",
+                    "Phase 1/Phase 2": "Phase 1/2",
+                    "Phase 2": "Phase 2",
+                    "Phase 2/Phase 3": "Phase 2/3",
+                    "Phase 3": "Phase 3",
+                    "Phase 4": "Phase 4",
+                    "Not Applicable": "N/A",
+                }
+                
+                # Apply simplified phases
+                duration_data["simplified_phase"] = duration_data["study_phase"].map(
+                    lambda x: phase_mapping.get(x, "Other")
+                )
+                
+                # Order phases logically
+                phase_order = ["Phase 1", "Phase 1/2", "Phase 2", "Phase 2/3", "Phase 3", "Phase 4", "N/A", "Other"]
+                
+                # Create boxplot
+                fig_duration = px.box(
+                    duration_data,
+                    x="simplified_phase",
+                    y="duration_days",
+                    category_orders={"simplified_phase": phase_order},
+                    title="Trial Duration by Phase",
+                    labels={
+                        "simplified_phase": "Study Phase",
+                        "duration_days": "Duration (days)",
+                    },
+                )
+                fig_duration.update_layout(
+                    autosize=True,
+                    height=600,
+                    annotations=[
+                        dict(
+                            text=caption,
+                            showarrow=False,
+                            xref="paper",
+                            yref="paper",
+                            x=0.5,
+                            y=-0.15,
+                            font=dict(size=10),
+                        )
+                    ],
+                )
+                plots["duration_by_phase"] = fig_duration
+                
+                # Save as both SVG and HTML
+                fig_duration.write_image(output_dir / f"duration_by_phase_{timestamp}.svg")
+                fig_duration.write_html(output_dir / f"duration_by_phase_{timestamp}.html")
+            else:
+                logger.warning("Skipping duration by phase plot: no valid data after filtering")
+        else:
+            logger.warning("Skipping duration by phase plot: required columns missing")
+    except Exception as e:
+        logger.error(f"Error creating duration by phase plot: {e}")
+    
+    # 3. Histogram of enrollment sizes
+    try:
+        enrollment_column = None
+        for col in ['enrollment', 'enrollment_count']:
+            if col in df.columns:
+                enrollment_column = col
+                break
+                
+        if enrollment_column:
+            enrollment_data = df.dropna(subset=[enrollment_column]).copy()
+            
+            if not enrollment_data.empty:
+                # Create histogram with bin size adjustments
+                fig_enrollment = px.histogram(
+                    enrollment_data,
+                    x=enrollment_column,
+                    nbins=30,
+                    title="Distribution of Trial Enrollment Sizes",
+                    labels={enrollment_column: "Number of Participants"},
+                )
+                fig_enrollment.update_layout(
+                    autosize=True,
+                    height=600,
+                    annotations=[
+                        dict(
+                            text=caption,
+                            showarrow=False,
+                            xref="paper",
+                            yref="paper",
+                            x=0.5,
+                            y=-0.15,
+                            font=dict(size=10),
+                        )
+                    ],
+                )
+                plots["enrollment_distribution"] = fig_enrollment
+                
+                # Save as both SVG and HTML
+                fig_enrollment.write_image(output_dir / f"enrollment_distribution_{timestamp}.svg")
+                fig_enrollment.write_html(output_dir / f"enrollment_distribution_{timestamp}.html")
+            else:
+                logger.warning("Skipping enrollment distribution plot: no valid data after filtering")
+        else:
+            logger.warning("Skipping enrollment distribution plot: required columns missing")
+    except Exception as e:
+        logger.error(f"Error creating enrollment distribution plot: {e}")
+    
+    logger.info(f"Created {len(plots)} plots")
+    return plots
+
+
+def generate_static_matplotlib_plots(
+    df: pd.DataFrame, output_dir: Optional[Path] = None
+) -> None:
+    """Generate static matplotlib plots for reporting.
+    
+    Args:
+        df: DataFrame with clinical trial data
+        output_dir: Directory to save plots (defaults to settings)
+    """
+    # STEP 6: Create static plots for reports
+    logger.info("Generating static matplotlib plots")
+    
+    # Check if DataFrame is empty
+    if df.empty:
+        logger.warning("Cannot create static plots: DataFrame is empty")
+        return
+    
+    if output_dir is None:
+        output_dir = settings.paths.figures
+    os.makedirs(output_dir, exist_ok=True)
+    
+    timestamp = get_timestamp()
+    run_date = pd.Timestamp.now().strftime("%Y-%m-%d")
+    caption = f"Source: clinicaltrials.gov, retrieved {run_date}"
+    
+    # 1. Bar chart of top modalities
+    try:
+        if 'modalities' in df.columns:
+            modality_counts = generate_modality_counts(df)
+            
+            if not modality_counts.empty:
+                # Filter out "Unknown" and sort by count
+                modality_counts = modality_counts[modality_counts["modality"] != "Unknown"]
+                modality_counts = modality_counts.sort_values("count", ascending=False).head(10)
+                
+                plt.figure(figsize=(10, 6))
+                bars = plt.bar(modality_counts["modality"], modality_counts["count"])
+                plt.title("Top Modalities in Clinical Trials")
+                plt.xlabel("Modality")
+                plt.ylabel("Number of Trials")
+                plt.xticks(rotation=45, ha="right")
+                plt.figtext(0.5, 0.01, caption, ha="center", fontsize=9)
+                plt.tight_layout()
+                
+                plt.savefig(output_dir / f"top_modalities_{timestamp}.png", dpi=300)
+                plt.close()
+            else:
+                logger.warning("Skipping top modalities plot: no valid data after filtering")
+        else:
+            logger.warning("Skipping top modalities plot: 'modalities' column missing")
+    except Exception as e:
+        logger.error(f"Error creating top modalities plot: {e}")
+    
+    # 2. Pie chart of trial phases
+    try:
+        # Check if study_phase column exists
+        phase_column = None
+        for col in ['study_phase', 'phase']:
+            if col in df.columns:
+                phase_column = col
+                break
+                
+        if phase_column:
+            phase_counts = df[phase_column].value_counts()
+            
+            if not phase_counts.empty:
+                plt.figure(figsize=(10, 8))
+                plt.pie(
+                    phase_counts,
+                    labels=phase_counts.index,
+                    autopct="%1.1f%%",
+                    startangle=90,
+                    shadow=False,
+                )
+                plt.title("Distribution of Trial Phases")
+                plt.figtext(0.5, 0.01, caption, ha="center", fontsize=9)
+                plt.tight_layout()
+                
+                plt.savefig(output_dir / f"phase_distribution_{timestamp}.png", dpi=300)
+                plt.close()
+            else:
+                logger.warning("Skipping phase distribution plot: no valid data after filtering")
+        else:
+            logger.warning("Skipping phase distribution plot: phase column missing")
+    except Exception as e:
+        logger.error(f"Error creating phase distribution plot: {e}")
+    
+    # 3. Bar chart of top targets
+    try:
+        if 'targets' in df.columns:
+            target_counts = generate_target_counts(df)
+            
+            if not target_counts.empty:
+                plt.figure(figsize=(12, 8))
+                bars = plt.barh(
+                    target_counts["target"][::-1], target_counts["count"][::-1]
+                )  # Reverse order for better visualization
+                plt.title("Top Protein Targets in Clinical Trials")
+                plt.xlabel("Number of Trials")
+                plt.ylabel("Target")
+                plt.figtext(0.5, 0.01, caption, ha="center", fontsize=9)
+                plt.tight_layout()
+                
+                plt.savefig(output_dir / f"top_targets_{timestamp}.png", dpi=300)
+                plt.close()
+            else:
+                logger.warning("Skipping top targets plot: no valid data after filtering")
+        else:
+            logger.warning("Skipping top targets plot: 'targets' column missing")
+    except Exception as e:
+        logger.error(f"Error creating top targets plot: {e}")
+    
+    logger.info("Static plots generated")
+
+
+def generate_insight_bullets(df: pd.DataFrame) -> str:
+    """Generate insight bullets from the analysis.
+    
+    Args:
+        df: DataFrame with clinical trial data
+        
+    Returns:
+        Markdown-formatted string with insight bullets
+    """
+    # STEP 7: Generate insight bullets
+    logger.info("Generating insight bullets")
+    
+    # Handle empty DataFrame case
+    if df.empty:
+        logger.warning("Cannot generate insights: DataFrame is empty")
+        return """
+        ## No Clinical Trials Data Available
+        
+        No clinical trials data was found for the requested criteria. This could be due to:
+        
+        - API connection issues with ClinicalTrials.gov
+        - No trials matching the specified search criteria
+        - Data filtering during processing that removed all entries
+        
+        Please check the logs for more details.
+        """
+    
+    # Get summary statistics
+    stats = generate_summary_statistics(df)
+    
+    # Check if we have modality and target data
+    has_modality_data = 'modalities' in df.columns and not df['modalities'].dropna().empty
+    has_target_data = 'targets' in df.columns and not df['targets'].dropna().empty
+    
+    if has_modality_data:
+        modality_counts = generate_modality_counts(df)
+    else:
+        modality_counts = pd.DataFrame(columns=['modality', 'count'])
+        
+    if has_target_data:
+        target_counts = generate_target_counts(df)
+    else:
+        target_counts = pd.DataFrame(columns=['target', 'count'])
+    
+    # Check if we have year data for timeline patterns
+    has_year_data = False
+    peak_year = None
+    peak_year_count = 0
+    
+    try:
+        if 'start_date' in df.columns and not df['start_date'].dropna().empty:
+            yearly_data = generate_yearly_modality_data(df)
+            if not yearly_data.empty and 'year' in yearly_data.columns:
+                year_counts = yearly_data['year'].value_counts()
+                if not year_counts.empty:
+                    peak_year = year_counts.idxmax()
+                    peak_year_count = year_counts.max()
+                    has_year_data = True
+    except Exception as e:
+        logger.warning(f"Error processing year data: {e}")
+    
+    # Get completion rate percentage safely
+    completion_rate = 0
+    if stats['total_trials'] > 0:
+        completion_rate = (stats['completed_trials'] / stats['total_trials']) * 100
+    
+    # Generate insights text
+    insights = textwrap.dedent(f"""
+    ## Key Insights from Clinical Trials Analysis
+    
+    ### Overview
+    - Analyzed **{stats['total_trials']} clinical trials** for {settings.disease}
+    - **{stats['completed_trials']} trials completed** ({completion_rate:.1f}% of total)
+    - **{stats['ongoing_trials']} ongoing trials** currently in progress
+    
+    ### Trial Size & Duration
+    - Median enrollment: **{stats['enrollment']['median']:.0f} participants** 
+      (Q1-Q3: {stats['enrollment']['q1']:.0f}-{stats['enrollment']['q3']:.0f})
+    - Median trial duration: **{stats['duration_days']['median']:.0f} days** 
+      (approximately {stats['duration_days']['median']/365:.1f} years)
+    """)
+    
+    # Add phase-specific info if available
+    phase3_median = None
+    if 'study_phase' in df.columns and 'duration_days' in df.columns:
+        phase3_data = df[df['study_phase'] == 'Phase 3']['duration_days']
+        if not phase3_data.empty:
+            phase3_median = phase3_data.median()
+            insights += f"    - Phase 3 trials had {phase3_median:.0f} days median duration\n"
+    
+    # Add modality and target sections if data is available
+    insights += textwrap.dedent("""
+    ### Modalities & Targets
+    """)
+    
+    if has_modality_data and not modality_counts.empty:
+        insights += f"    - Most common modality: **{modality_counts.iloc[0]['modality']}** ({modality_counts.iloc[0]['count']} trials)\n"
+    else:
+        insights += "    - No modality data available\n"
+    
+    if has_target_data and not target_counts.empty:
+        insights += f"    - Most studied target: **{target_counts.iloc[0]['target']}** ({target_counts.iloc[0]['count']} trials)\n"
+        insights += f"    - {len(target_counts)} unique protein targets identified across all trials\n"
+    else:
+        insights += "    - No target data available\n"
+    
+    # Add timeline section if data is available
+    if has_year_data and peak_year is not None:
+        insights += textwrap.dedent(f"""
+        ### Timeline Patterns
+        - Peak activity year: **{peak_year}** with {peak_year_count} trials
+        """)
+    
+    return insights
+
+
+@log_execution_time
+def analyze_trials(
+    df: pd.DataFrame, timestamp: Optional[str] = None
+) -> Tuple[Dict[str, Any], str]:
+    """Analyze clinical trial data and generate insights.
+    
+    Args:
+        df: DataFrame with clinical trial data
+        timestamp: Timestamp string for file naming
+        
+    Returns:
+        Tuple of (summary stats dictionary, insights text)
+    """
+    # STEP 8: Run full analysis pipeline
+    logger.info("Running full analysis pipeline")
+    
+    if timestamp is None:
+        timestamp = get_timestamp()
+    
+    # Handle empty DataFrame case
+    if df.empty:
+        logger.warning("Cannot perform full analysis: DataFrame is empty")
+        empty_stats = {
+            "total_trials": 0,
+            "completed_trials": 0,
+            "ongoing_trials": 0,
+            "enrollment": {
+                "mean": 0, "median": 0, "min": 0, "max": 0, "q1": 0, "q3": 0
+            },
+            "duration_days": {
+                "mean": 0, "median": 0, "min": 0, "max": 0, "q1": 0, "q3": 0
+            },
+            "phase_counts": {}
+        }
+        
+        empty_insights = """
+        ## No Clinical Trials Data Available
+        
+        No clinical trials data was found for the requested criteria. This could be due to:
+        
+        - API connection issues with ClinicalTrials.gov
+        - No trials matching the specified search criteria
+        - Data filtering during processing that removed all entries
+        
+        Please check the logs for more details.
+        """
+        
+        # Save empty insights to file
+        insights_path = settings.paths.processed_data / f"insights_{timestamp}.md"
+        settings.paths.processed_data.mkdir(parents=True, exist_ok=True)
+        with open(insights_path, "w") as f:
+            f.write(empty_insights)
+        
+        # Save empty stats to file
+        stats_path = settings.paths.processed_data / f"stats_{timestamp}.json"
+        import json
+        with open(stats_path, "w") as f:
+            json.dump(empty_stats, f, indent=2)
+            
+        return empty_stats, empty_insights
+        
+    # Generate summary statistics
+    try:
+        summary_stats = generate_summary_statistics(df)
+    except Exception as e:
+        logger.error(f"Error generating summary statistics: {e}")
+        summary_stats = {
+            "total_trials": len(df),
+            "completed_trials": 0,
+            "ongoing_trials": 0,
+            "enrollment": {
+                "mean": 0, "median": 0, "min": 0, "max": 0, "q1": 0, "q3": 0
+            },
+            "duration_days": {
+                "mean": 0, "median": 0, "min": 0, "max": 0, "q1": 0, "q3": 0
+            },
+            "phase_counts": {}
+        }
+    
+    # Create plots - catch any exceptions so the pipeline doesn't fail
+    try:
+        plots = create_plots(df)
+    except Exception as e:
+        logger.error(f"Error creating plots: {e}")
+        plots = {}
+    
+    # Create static plots - catch any exceptions
+    try:
+        generate_static_matplotlib_plots(df)
+    except Exception as e:
+        logger.error(f"Error generating static plots: {e}")
+    
+    # Generate insights - catch any exceptions
+    try:
+        insights = generate_insight_bullets(df)
+    except Exception as e:
+        logger.error(f"Error generating insights: {e}")
+        insights = f"""
+        ## Clinical Trials Analysis 
+        
+        Analysis completed with {len(df)} trials, but there was an error generating detailed insights.
+        Please check the logs for more information.
+        
+        Error: {str(e)}
+        """
+    
+    # Create directories if they don't exist
+    settings.paths.processed_data.mkdir(parents=True, exist_ok=True)
+    
+    # Save insights to file
+    insights_path = settings.paths.processed_data / f"insights_{timestamp}.md"
+    with open(insights_path, "w") as f:
+        f.write(insights)
+    
+    # Save summary stats to file
+    stats_path = settings.paths.processed_data / f"stats_{timestamp}.json"
+    import json
+    with open(stats_path, "w") as f:
+        # Convert NumPy types to Python native types for JSON serialization
+        def convert_to_native(obj):
+            if isinstance(obj, (np.integer, np.int64)):
+                return int(obj)
+            elif isinstance(obj, (np.floating, np.float64)):
+                return float(obj)
+            elif isinstance(obj, np.ndarray):
+                return obj.tolist()
+            elif isinstance(obj, dict):
+                return {k: convert_to_native(v) for k, v in obj.items()}
+            return obj
+        
+        json.dump(convert_to_native(summary_stats), f, indent=2)
+    
+    logger.info(f"Analysis completed and saved to {insights_path} and {stats_path}")
+    
+    return summary_stats, insights 
