@@ -192,7 +192,7 @@ async def extract_all_clinical_trials(
                 
             page_number += 1
     
-    logger.info(f"Extracted total of {len(all_studies)} clinical trials")
+    logger.info(f"Extracted total of {len(all_studies)} clinical trials before filtering")
     # Save raw extraction
     raw_path = get_raw_data_path(timestamp)
     raw_path.mkdir(parents=True, exist_ok=True)
@@ -305,20 +305,22 @@ def extract_intervention_names(studies: List[Dict[str, Any]]) -> Set[str]:
 
 
 def parse_date(date_str: Optional[str]) -> Optional[datetime]:
-    """Parse date string from ClinicalTrials.gov API.
-    
-    Args:
-        date_str: Date string in ISO format
-        
-    Returns:
-        Parsed datetime object or None if parsing fails
-    """
+    """Parse date string from ClinicalTrials.gov API, handling partial dates (YYYY-MM, YYYY)."""
     if not date_str:
         return None
-    
     try:
+        # Try full ISO format first
         return datetime.fromisoformat(date_str.split("T")[0])
     except (ValueError, TypeError):
+        # Try YYYY-MM format
+        try:
+            if len(date_str) == 7 and '-' in date_str:
+                return datetime.strptime(date_str, "%Y-%m")
+            # Try YYYY format
+            if len(date_str) == 4 and date_str.isdigit():
+                return datetime.strptime(date_str, "%Y")
+        except Exception:
+            pass
         logger.warning(f"Failed to parse date: {date_str}")
         return None
 
