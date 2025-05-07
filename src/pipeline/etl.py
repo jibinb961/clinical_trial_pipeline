@@ -14,6 +14,7 @@ import pandas as pd
 from tqdm.asyncio import tqdm_asyncio
 import json
 import hashlib
+import logging
 
 from src.pipeline.config import settings
 from src.pipeline.utils import (
@@ -127,6 +128,7 @@ async def extract_all_clinical_trials(
     year_start: Optional[int] = None,
     year_end: Optional[int] = None,
     save_raw: bool = True,
+    logger: Optional[Any] = None,
 ) -> List[Dict[str, Any]]:
     """Extract all clinical trial data matching the criteria.
     
@@ -135,10 +137,20 @@ async def extract_all_clinical_trials(
         year_start: Start year for study search (defaults to settings)
         year_end: End year for study search (defaults to settings)
         save_raw: Whether to save raw JSON responses
+        logger: Optional logger object
         
     Returns:
         List of clinical trial studies
     """
+    # Use Prefect logger if not provided
+    if logger is None:
+        try:
+            from prefect import get_run_logger
+            logger = get_run_logger()
+        except ImportError:
+            from src.pipeline.utils import logger as default_logger
+            logger = default_logger
+    
     # STEP 3: Extract all pages of data
     disease = disease or settings.disease
     year_start = year_start or settings.year_start
