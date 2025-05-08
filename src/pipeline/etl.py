@@ -110,7 +110,7 @@ async def extract_all_clinical_trials(
     save_raw: bool = True,
     logger: Optional[Any] = None,
 ) -> List[Dict[str, Any]]:
-    """Extract all clinical trial data matching the criteria (supports nextPageToken pagination)."""
+    """Extract all clinical trial data matching the criteria (supports nextPageToken pagination and max_studies/max_pages limits)."""
     if logger is None:
         try:
             from prefect import get_run_logger
@@ -127,6 +127,8 @@ async def extract_all_clinical_trials(
     all_studies = []
     timestamp = get_timestamp()
     metadata_checked = False
+    max_studies = settings.max_studies
+    max_pages = settings.max_pages
     async with aiohttp.ClientSession() as session:
         metadata_info = await check_api_metadata(session)
         metadata_checked = True
@@ -138,12 +140,19 @@ async def extract_all_clinical_trials(
         page_number = 1
         next_page_token = None
         while True:
+            if max_pages is not None and page_number > max_pages:
+                logger.info(f"Reached max_pages limit: {max_pages}")
+                break
             params = dict(query_params)  # Copy base params
             if next_page_token:
                 params["pageToken"] = next_page_token
             studies, next_page_token = await extract_clinical_trials_page(session, url, params)
             logger.info(f"Retrieved page {page_number} with {len(studies)} studies, next_page_token: {next_page_token}")
             all_studies.extend(studies)
+            if max_studies is not None and len(all_studies) >= max_studies:
+                logger.info(f"Reached max_studies limit: {max_studies}")
+                all_studies = all_studies[:max_studies]
+                break
             if save_raw:
                 raw_path = get_raw_data_path(timestamp)
                 save_json(

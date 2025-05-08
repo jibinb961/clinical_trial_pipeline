@@ -102,6 +102,16 @@ class Settings(BaseSettings):
         "gemini-2.0-flash", description="Google Gemini model to use for enrichment"
     )
 
+    # New settings
+    max_studies: Optional[int] = Field(
+        default=None,
+        description="Maximum number of studies to fetch from the API (None for unlimited). Can be set via .env as MAX_STUDIES."
+    )
+    max_pages: Optional[int] = Field(
+        default=None,
+        description="Maximum number of pages to fetch from the API (None for unlimited). Can be set via .env as MAX_PAGES."
+    )
+
 
 # Create singleton instance
 settings = Settings() 
