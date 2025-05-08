@@ -65,56 +65,36 @@ async def extract_clinical_trials_page(
     url: str,
     params: Dict[str, Any],
 ) -> Tuple[List[Dict[str, Any]], Optional[str]]:
-    """Extract a single page of clinical trial data from the API.
-    
-    Args:
-        session: aiohttp client session
-        url: API URL
-        params: Query parameters
-        
-    Returns:
-        Tuple of (list of studies, next page URL or None)
-    """
-    # STEP 2: Extract a single page of data
+    """Extract a single page of clinical trial data from the API (supports nextPageToken pagination)."""
+    logger = params.get('logger', None)
+    if logger is None:
+        try:
+            from prefect import get_run_logger
+            logger = get_run_logger()
+        except ImportError:
+            from src.pipeline.utils import logger as default_logger
+            logger = default_logger
     logger.debug(f"Fetching page with params: {params}")
-    
     try:
         response_data = await fetch_with_retry(session, url, params)
-        
         studies = response_data.get("studies", [])
-        links = response_data.get("links", [])
-        
-        # Find the "next" link if it exists
-        next_url = None
-        for link in links:
-            if link.get("rel") == "next":
-                next_url = link.get("href")
-                break
-        
-        return studies, next_url
-        
+        next_page_token = response_data.get("nextPageToken")
+        return studies, next_page_token
     except aiohttp.ClientResponseError as e:
-        # Per API docs: Handle different status codes appropriately
-        if e.status == 429:  # Too Many Requests
+        if e.status == 429:
             logger.warning(f"Rate limit exceeded. Retrying with backoff: {str(e)}")
-            # This will be retried by the fetch_with_retry function
             raise
-        elif e.status >= 500:  # Server errors
+        elif e.status >= 500:
             logger.warning(f"Server error from ClinicalTrials.gov API: {str(e)}")
-            # This will also be retried
             raise
-        elif e.status >= 400:  # Client errors (except 429)
+        elif e.status >= 400:
             logger.error(f"Client error when querying ClinicalTrials.gov API: {str(e)}")
-            # For client errors, return empty results instead of retrying
             return [], None
     except (aiohttp.ClientError, asyncio.TimeoutError) as e:
         logger.error(f"Network error when querying ClinicalTrials.gov API: {str(e)}")
-        # Network errors will be retried
         raise
     except json.JSONDecodeError as e:
-        # Handle malformed JSON
         logger.error(f"Malformed JSON response from ClinicalTrials.gov API: {str(e)}")
-        # Save the raw response for debugging
         error_path = settings.paths.raw_data / "errors"
         error_path.mkdir(exist_ok=True)
         with open(error_path / f"malformed_json_{get_timestamp()}.txt", "w") as f:
@@ -130,19 +110,7 @@ async def extract_all_clinical_trials(
     save_raw: bool = True,
     logger: Optional[Any] = None,
 ) -> List[Dict[str, Any]]:
-    """Extract all clinical trial data matching the criteria.
-    
-    Args:
-        disease: Disease condition to search for (defaults to settings)
-        year_start: Start year for study search (defaults to settings)
-        year_end: End year for study search (defaults to settings)
-        save_raw: Whether to save raw JSON responses
-        logger: Optional logger object
-        
-    Returns:
-        List of clinical trial studies
-    """
-    # Use Prefect logger if not provided
+    """Extract all clinical trial data matching the criteria (supports nextPageToken pagination)."""
     if logger is None:
         try:
             from prefect import get_run_logger
@@ -150,60 +118,41 @@ async def extract_all_clinical_trials(
         except ImportError:
             from src.pipeline.utils import logger as default_logger
             logger = default_logger
-    
-    # STEP 3: Extract all pages of data
     disease = disease or settings.disease
     year_start = year_start or settings.year_start
     year_end = year_end or settings.year_end
-    
     logger.info(f"Extracting clinical trials for {disease} ({year_start}-{year_end})")
-    
     query_params = await build_clinical_trials_query(disease, year_start, year_end)
     url = str(settings.ctgov.base_url)
-    
     all_studies = []
     timestamp = get_timestamp()
     metadata_checked = False
-    
     async with aiohttp.ClientSession() as session:
-        # Check API metadata to detect schema changes
         metadata_info = await check_api_metadata(session)
         metadata_checked = True
-        
         if metadata_info.get("error"):
             logger.warning("Failed to check API metadata, proceeding with extraction anyway")
         else:
-            # Save metadata for reference
             raw_path = get_raw_data_path(timestamp)
             save_json(metadata_info, raw_path / "api_metadata.json")
-        
         page_number = 1
-        next_url = None
-        
+        next_page_token = None
         while True:
-            # Use the next URL if available, otherwise use the base URL with parameters
-            current_url = next_url or url
-            current_params = {} if next_url else query_params
-            
-            studies, next_url = await extract_clinical_trials_page(
-                session, current_url, current_params
-            )
-            
-            logger.info(f"Retrieved page {page_number} with {len(studies)} studies")
+            params = dict(query_params)  # Copy base params
+            if next_page_token:
+                params["pageToken"] = next_page_token
+            studies, next_page_token = await extract_clinical_trials_page(session, url, params)
+            logger.info(f"Retrieved page {page_number} with {len(studies)} studies, next_page_token: {next_page_token}")
             all_studies.extend(studies)
-            
             if save_raw:
                 raw_path = get_raw_data_path(timestamp)
                 save_json(
                     {"studies": studies, "page": page_number},
                     raw_path / f"page_{page_number}.json",
                 )
-            
-            if not next_url:
+            if not next_page_token:
                 break
-                
             page_number += 1
-    
     logger.info(f"Extracted total of {len(all_studies)} clinical trials before filtering")
     # Save raw extraction
     raw_path = get_raw_data_path(timestamp)
