@@ -16,6 +16,7 @@ import numpy as np
 import pandas as pd
 import plotly.express as px
 from plotly.graph_objects import Figure as PlotlyFigure
+import plotly.graph_objects as go
 
 
 from src.pipeline.config import settings
@@ -295,6 +296,32 @@ def plot_enrollment_by_sponsor(df: pd.DataFrame, output_dir: Optional[Path] = No
     plt.close()
 
 
+def generate_sankey_data(df: pd.DataFrame, top_n: int = 5):
+    """Prepare data for a Sankey diagram: Sponsor -> Modality -> Target."""
+    if not all(col in df.columns for col in ['lead_sponsor', 'modalities', 'targets']):
+        return None, None, None
+    # Flatten the data for Sankey
+    rows = []
+    for _, row in df.iterrows():
+        sponsor = row['lead_sponsor']
+        modalities = row['modalities'] if isinstance(row['modalities'], list) else [row['modalities']]
+        targets = row['targets'] if isinstance(row['targets'], list) else [row['targets']]
+        for m in modalities:
+            for t in targets:
+                rows.append((sponsor, m, t))
+    sankey_df = pd.DataFrame(rows, columns=['sponsor', 'modality', 'target'])
+    # Filter to top N sponsors, modalities, targets
+    top_sponsors = sankey_df['sponsor'].value_counts().head(top_n).index
+    top_modalities = sankey_df['modality'].value_counts().head(top_n).index
+    top_targets = sankey_df['target'].value_counts().head(top_n).index
+    sankey_df = sankey_df[
+        sankey_df['sponsor'].isin(top_sponsors) &
+        sankey_df['modality'].isin(top_modalities) &
+        sankey_df['target'].isin(top_targets)
+    ]
+    return sankey_df, top_sponsors, top_modalities, top_targets
+
+
 @log_execution_time
 def create_plots(
     df: pd.DataFrame, output_dir: Optional[Path] = None
@@ -368,9 +395,7 @@ def create_plots(
                 ],
             )
             plots["modality_over_time"] = fig_modality
-            
-            # Save as both SVG and HTML
-            fig_modality.write_image(output_dir / f"modality_over_time_{timestamp}.svg")
+            # Save as HTML only (static image export removed due to Kaleido dependency)
             fig_modality.write_html(output_dir / f"modality_over_time_{timestamp}.html")
         else:
             logger.warning("Skipping modality over time plot: insufficient data")
@@ -430,9 +455,7 @@ def create_plots(
                     ],
                 )
                 plots["duration_by_phase"] = fig_duration
-                
-                # Save as both SVG and HTML
-                fig_duration.write_image(output_dir / f"duration_by_phase_{timestamp}.svg")
+                # Save as HTML only (static image export removed due to Kaleido dependency)
                 fig_duration.write_html(output_dir / f"duration_by_phase_{timestamp}.html")
             else:
                 logger.warning("Skipping duration by phase plot: no valid data after filtering")
@@ -477,9 +500,7 @@ def create_plots(
                     ],
                 )
                 plots["enrollment_distribution"] = fig_enrollment
-                
-                # Save as both SVG and HTML
-                fig_enrollment.write_image(output_dir / f"enrollment_distribution_{timestamp}.svg")
+                # Save as HTML only (static image export removed due to Kaleido dependency)
                 fig_enrollment.write_html(output_dir / f"enrollment_distribution_{timestamp}.html")
             else:
                 logger.warning("Skipping enrollment distribution plot: no valid data after filtering")
@@ -517,7 +538,7 @@ def create_plots(
                 ],
             )
             plots["top_sponsors"] = fig_sponsors
-            fig_sponsors.write_image(output_dir / f"top_sponsors_{timestamp}.svg")
+            # Save as HTML only (static image export removed due to Kaleido dependency)
             fig_sponsors.write_html(output_dir / f"top_sponsors_{timestamp}.html")
         else:
             logger.warning("Skipping top sponsors plot: 'lead_sponsor' column missing or empty.")
@@ -551,7 +572,7 @@ def create_plots(
                 ],
             )
             plots["status_distribution"] = fig_status
-            fig_status.write_image(output_dir / f"status_distribution_{timestamp}.svg")
+            # Save as HTML only (static image export removed due to Kaleido dependency)
             fig_status.write_html(output_dir / f"status_distribution_{timestamp}.html")
         else:
             logger.warning("Skipping status distribution plot: 'overall_status' column missing or empty.")
@@ -588,7 +609,7 @@ def create_plots(
                     ],
                 )
                 plots["enrollment_by_sponsor"] = fig_enroll_sponsor
-                fig_enroll_sponsor.write_image(output_dir / f"enrollment_by_sponsor_{timestamp}.svg")
+                # Save as HTML only (static image export removed due to Kaleido dependency)
                 fig_enroll_sponsor.write_html(output_dir / f"enrollment_by_sponsor_{timestamp}.html")
             else:
                 logger.warning("No data for enrollment by sponsor plot after filtering.")
@@ -627,12 +648,65 @@ def create_plots(
                 ],
             )
             plots["sponsor_activity_over_time"] = fig_sponsor_trend
-            fig_sponsor_trend.write_image(output_dir / f"sponsor_activity_over_time_{timestamp}.svg")
+            # Save as HTML only (static image export removed due to Kaleido dependency)
             fig_sponsor_trend.write_html(output_dir / f"sponsor_activity_over_time_{timestamp}.html")
         else:
             logger.warning("Skipping sponsor activity over time plot: insufficient data")
     except Exception as e:
         logger.error(f"Error creating sponsor activity over time plot: {e}")
+    
+    # Add: Sankey chart (Plotly)
+    try:
+        sankey_df, top_sponsors, top_modalities, top_targets = generate_sankey_data(df, top_n=5)
+        if sankey_df is not None and not sankey_df.empty:
+            # Build node list
+            sponsor_nodes = list(top_sponsors)
+            modality_nodes = list(top_modalities)
+            target_nodes = list(top_targets)
+            nodes = sponsor_nodes + modality_nodes + target_nodes
+            node_indices = {name: i for i, name in enumerate(nodes)}
+            # Build links: sponsor->modality
+            sponsor_modality = sankey_df.groupby(['sponsor', 'modality']).size().reset_index(name='count')
+            modality_target = sankey_df.groupby(['modality', 'target']).size().reset_index(name='count')
+            # Links from sponsor to modality
+            links_sponsor_modality = dict(
+                source=[node_indices[row['sponsor']] for _, row in sponsor_modality.iterrows()],
+                target=[node_indices[row['modality']] for _, row in sponsor_modality.iterrows()],
+                value=[row['count'] for _, row in sponsor_modality.iterrows()]
+            )
+            # Links from modality to target
+            links_modality_target = dict(
+                source=[node_indices[row['modality']] for _, row in modality_target.iterrows()],
+                target=[node_indices[row['target']] for _, row in modality_target.iterrows()],
+                value=[row['count'] for _, row in modality_target.iterrows()]
+            )
+            # Combine links
+            link = dict(
+                source=links_sponsor_modality['source'] + links_modality_target['source'],
+                target=links_sponsor_modality['target'] + links_modality_target['target'],
+                value=links_sponsor_modality['value'] + links_modality_target['value']
+            )
+            fig_sankey = go.Figure(data=[go.Sankey(
+                node=dict(
+                    pad=15,
+                    thickness=20,
+                    line=dict(color="black", width=0.5),
+                    label=nodes,
+                ),
+                link=link
+            )])
+            fig_sankey.update_layout(
+                title_text="Sponsor → Modality → Target Relationships (Top 5 Each)",
+                font_size=12,
+                height=700
+            )
+            plots["sankey_sponsor_modality_target"] = fig_sankey
+            # Save as HTML only (static image export removed due to Kaleido dependency)
+            fig_sankey.write_html(output_dir / f"sankey_sponsor_modality_target_{timestamp}.html")
+        else:
+            logger.warning("Skipping Sankey plot: insufficient data")
+    except Exception as e:
+        logger.error(f"Error creating Sankey plot: {e}")
     
     logger.info(f"Created {len(plots)} plots")
     return plots
