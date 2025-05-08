@@ -778,120 +778,68 @@ def generate_static_matplotlib_plots(
     logger.info("Static plots generated")
 
 
-def generate_insight_bullets(df: pd.DataFrame) -> str:
-    """Generate insight bullets from the analysis.
-    
-    Args:
-        df: DataFrame with clinical trial data
-        
-    Returns:
-        Markdown-formatted string with insight bullets
+def generate_llm_insights(df: pd.DataFrame) -> str:
     """
-    # STEP 7: Generate insight bullets
-    logger.info("Generating insight bullets")
-    
-    # Handle empty DataFrame case
+    Generate a detailed insights report using Gemini LLM, summarizing key statistics, trends, and findings from the clinical trials data.
+    Falls back to manual bullet points if LLM call fails.
+    """
+    import json
+    from llm_module import generate_pipeline_insights
+
     if df.empty:
-        logger.warning("Cannot generate insights: DataFrame is empty")
-        return """
-        ## No Clinical Trials Data Available
-        
-        No clinical trials data was found for the requested criteria. This could be due to:
-        
-        - API connection issues with ClinicalTrials.gov
-        - No trials matching the specified search criteria
-        - Data filtering during processing that removed all entries
-        
-        Please check the logs for more details.
-        """
-    
-    # Get summary statistics
+        return "No clinical trials data available for insights generation."
+
+    # Prepare summary statistics
     stats = generate_summary_statistics(df)
-    
-    # Check if we have modality and target data
-    has_modality_data = 'modalities' in df.columns and not df['modalities'].dropna().empty
-    has_target_data = 'targets' in df.columns and not df['targets'].dropna().empty
-    
-    if has_modality_data:
-        modality_counts = generate_modality_counts(df)
-    else:
-        modality_counts = pd.DataFrame(columns=['modality', 'count'])
-        
-    if has_target_data:
-        target_counts = generate_target_counts(df)
-    else:
-        target_counts = pd.DataFrame(columns=['target', 'count'])
-    
-    # Check if we have year data for timeline patterns
-    has_year_data = False
-    peak_year = None
-    peak_year_count = 0
-    
+    # Top sponsors
+    top_sponsors = df['lead_sponsor'].value_counts().head(5).to_dict() if 'lead_sponsor' in df.columns else {}
+    # Top modalities
+    modalities = []
+    if 'modalities' in df.columns:
+        modalities = pd.Series([m for sublist in df['modalities'].dropna() for m in (sublist if isinstance(sublist, list) else [sublist])]).value_counts().head(5).to_dict()
+    # Top targets
+    targets = []
+    if 'targets' in df.columns:
+        targets = pd.Series([t for sublist in df['targets'].dropna() for t in (sublist if isinstance(sublist, list) else [sublist])]).value_counts().head(5).to_dict()
+    # Yearly trend
+    yearly_counts = df['start_date'].dropna().apply(get_year_from_date).value_counts().sort_index().to_dict() if 'start_date' in df.columns else {}
+
+    # Compose a detailed prompt
+    prompt = f"""
+You are an expert biotech analyst. Analyze the following clinical trials data and generate a detailed, insightful report for a hedge fund or investor audience. Highlight trends, sponsor activity, therapeutic focus, and any notable findings.
+
+Key statistics:
+{json.dumps(stats, indent=2)}
+
+Top sponsors (by number of trials):
+{json.dumps(top_sponsors, indent=2)}
+
+Top modalities (by number of trials):
+{json.dumps(modalities, indent=2)}
+
+Top targets (by number of trials):
+{json.dumps(targets, indent=2)}
+
+Number of new trials started per year:
+{json.dumps(yearly_counts, indent=2)}
+
+If possible, also:
+- Identify any emerging trends or shifts in research focus
+- Comment on the distribution of trial phases and enrollment sizes
+- Note any sponsors with increasing or decreasing activity
+- Suggest potential strategic priorities or risks
+
+Format your response in markdown with clear sections and bullet points where appropriate.
+"""
+
     try:
-        if 'start_date' in df.columns and not df['start_date'].dropna().empty:
-            yearly_data = generate_yearly_modality_data(df)
-            if not yearly_data.empty and 'year' in yearly_data.columns:
-                year_counts = yearly_data['year'].value_counts()
-                if not year_counts.empty:
-                    peak_year = year_counts.idxmax()
-                    peak_year_count = year_counts.max()
-                    has_year_data = True
+        llm_report = generate_pipeline_insights(prompt)
+        if llm_report and isinstance(llm_report, str):
+            return llm_report
+        else:
+            return "[LLM did not return a valid report. Please check the LLM integration.]"
     except Exception as e:
-        logger.warning(f"Error processing year data: {e}")
-    
-    # Get completion rate percentage safely
-    completion_rate = 0
-    if stats['total_trials'] > 0:
-        completion_rate = (stats['completed_trials'] / stats['total_trials']) * 100
-    
-    # Generate insights text
-    insights = textwrap.dedent(f"""
-    ## Key Insights from Clinical Trials Analysis
-    
-    ### Overview
-    - Analyzed **{stats['total_trials']} clinical trials** for {settings.disease}
-    - **{stats['completed_trials']} trials completed** ({completion_rate:.1f}% of total)
-    - **{stats['ongoing_trials']} ongoing trials** currently in progress
-    
-    ### Trial Size & Duration
-    - Median enrollment: **{stats['enrollment']['median']:.0f} participants** 
-      (Q1-Q3: {stats['enrollment']['q1']:.0f}-{stats['enrollment']['q3']:.0f})
-    - Median trial duration: **{stats['duration_days']['median']:.0f} days** 
-      (approximately {stats['duration_days']['median']/365:.1f} years)
-    """)
-    
-    # Add phase-specific info if available
-    phase3_median = None
-    if 'study_phase' in df.columns and 'duration_days' in df.columns:
-        phase3_data = df[df['study_phase'] == 'Phase 3']['duration_days']
-        if not phase3_data.empty:
-            phase3_median = phase3_data.median()
-            insights += f"    - Phase 3 trials had {phase3_median:.0f} days median duration\n"
-    
-    # Add modality and target sections if data is available
-    insights += textwrap.dedent("""
-    ### Modalities & Targets
-    """)
-    
-    if has_modality_data and not modality_counts.empty:
-        insights += f"    - Most common modality: **{modality_counts.iloc[0]['modality']}** ({modality_counts.iloc[0]['count']} trials)\n"
-    else:
-        insights += "    - No modality data available\n"
-    
-    if has_target_data and not target_counts.empty:
-        insights += f"    - Most studied target: **{target_counts.iloc[0]['target']}** ({target_counts.iloc[0]['count']} trials)\n"
-        insights += f"    - {len(target_counts)} unique protein targets identified across all trials\n"
-    else:
-        insights += "    - No target data available\n"
-    
-    # Add timeline section if data is available
-    if has_year_data and peak_year is not None:
-        insights += textwrap.dedent(f"""
-        ### Timeline Patterns
-        - Peak activity year: **{peak_year}** with {peak_year_count} trials
-        """)
-    
-    return insights
+        return f"[LLM insights generation failed: {str(e)}]"
 
 
 @log_execution_time
@@ -988,7 +936,7 @@ def analyze_trials(
     
     # Generate insights - catch any exceptions
     try:
-        insights = generate_insight_bullets(df)
+        insights = generate_llm_insights(df)
     except Exception as e:
         logger.error(f"Error generating insights: {e}")
         insights = f"""

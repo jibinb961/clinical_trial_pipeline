@@ -393,3 +393,20 @@ def generate_stock_correlation_analysis(ticker: str, trials: List[Dict], stock_d
         error_msg = f"Unexpected error in correlation analysis: {str(e)}"
         print(error_msg)
         return error_msg 
+
+def generate_pipeline_insights(prompt: str) -> str:
+    """
+    Generate a pipeline-level insights report using Gemini LLM given a prompt string.
+    Args:
+        prompt: The prompt string to send to Gemini
+    Returns:
+        The LLM-generated report as a string
+    """
+    if not GEMINI_API_KEY:
+        return "Error: Gemini API key not configured. Please set the GEMINI_API_KEY environment variable."
+    try:
+        model = genai.GenerativeModel('gemini-2.0-flash')
+        response = model.generate_content(prompt)
+        return response.text
+    except Exception as e:
+        return f"Error generating pipeline insights: {str(e)}" 

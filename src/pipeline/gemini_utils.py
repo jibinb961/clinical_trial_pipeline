@@ -54,24 +54,32 @@ async def query_gemini_for_drug_info(drug_name: str) -> Optional[Dict[str, str]]
     try:
         # Prepare the prompt for drug information extraction
         prompt = f"""
-        You are a pharmacology expert. Your task is to extract the modality and target of a drug from a given name.
+        You are a pharmacology expert. Your task is to extract the *modality* and *target* of a drug given its name.
 
-        Return exactly one JSON object with keys:
+        Return a single JSON object with these two keys:
 
-        "modality" : choose one of
-            ["small-molecule","monoclonal antibody","antibody-drug conjugate",
-            "protein","peptide","siRNA","gene therapy","cell therapy",
-            "CAR-T","vaccine","Unknown"]
+        "modality": Choose one of the following strings (case-sensitive):
+        - "small-molecule"
+        - "monoclonal antibody"
+        - "antibody-drug conjugate"
+        - "protein"
+        - "peptide"
+        - "siRNA"
+        - "gene therapy"
+        - "cell therapy"
+        - "CAR-T"
+        - "vaccine"
+        - "Unknown" (only if you cannot infer the modality)
 
-        "target"   : Target should be the protein or pathway the drug acts on. It should be a primary HGNC gene symbol (e.g., "PCSK9", "EGFR") or
-                    major pathway name (e.g., "JAK/STAT") or "Unknown".
+        "target": Return the HGNC gene symbol or pathway the drug acts on. Examples: "PCSK9", "EGFR", "JAK/STAT".
+        If unknown, return "Unknown".
 
-        Think step-by-step internally, but output ONLY the JSON (no code fences).
+        **Important**: Think step by step internally, but output only the final JSON — no explanations, no code fences.
 
-        Sample output:
+        Example:
         {{
-            "modality": "small-molecule",
-            "target": "PCSK9"
+        "modality": "small-molecule",
+        "target": "PCSK9"
         }}
 
         DRUG = "{drug_name}"
