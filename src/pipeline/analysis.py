@@ -17,6 +17,7 @@ import pandas as pd
 import plotly.express as px
 from plotly.graph_objects import Figure as PlotlyFigure
 
+
 from src.pipeline.config import settings
 from src.pipeline.utils import get_timestamp, log_execution_time, logger
 
@@ -208,6 +209,22 @@ def generate_yearly_modality_data(
     ).reset_index()
     
     return pivot_df
+
+
+def generate_sponsor_activity_over_time(df: pd.DataFrame, top_n: int = 5) -> pd.DataFrame:
+    """Generate a DataFrame showing the number of new trials per year for top sponsors."""
+    if 'lead_sponsor' not in df.columns or 'start_date' not in df.columns:
+        return pd.DataFrame()
+    df = df.copy()
+    df['year'] = df['start_date'].apply(get_year_from_date)
+    # Only keep rows with valid year and sponsor
+    df = df.dropna(subset=['year', 'lead_sponsor'])
+    # Get top N sponsors by total trial count
+    top_sponsors = df['lead_sponsor'].value_counts().head(top_n).index
+    df = df[df['lead_sponsor'].isin(top_sponsors)]
+    # Group by year and sponsor
+    sponsor_year = df.groupby(['year', 'lead_sponsor']).size().reset_index(name='count')
+    return sponsor_year
 
 
 def plot_top_sponsors(df: pd.DataFrame, output_dir: Optional[Path] = None, top_n: int = 10, timestamp: Optional[str] = None):
@@ -580,6 +597,43 @@ def create_plots(
     except Exception as e:
         logger.error(f"Error creating enrollment by sponsor plot: {e}")
     
+    # Add: Sponsor activity over time (Plotly)
+    try:
+        sponsor_year = generate_sponsor_activity_over_time(df, top_n=5)
+        if not sponsor_year.empty:
+            fig_sponsor_trend = px.line(
+                sponsor_year,
+                x='year',
+                y='count',
+                color='lead_sponsor',
+                markers=True,
+                title='New Clinical Trials per Year by Top 5 Sponsors',
+                labels={'year': 'Year', 'count': 'Number of New Trials', 'lead_sponsor': 'Sponsor'},
+            )
+            fig_sponsor_trend.update_layout(
+                autosize=True,
+                height=600,
+                legend_title='Sponsor',
+                annotations=[
+                    dict(
+                        text=caption,
+                        showarrow=False,
+                        xref="paper",
+                        yref="paper",
+                        x=0.5,
+                        y=-0.15,
+                        font=dict(size=10),
+                    )
+                ],
+            )
+            plots["sponsor_activity_over_time"] = fig_sponsor_trend
+            fig_sponsor_trend.write_image(output_dir / f"sponsor_activity_over_time_{timestamp}.svg")
+            fig_sponsor_trend.write_html(output_dir / f"sponsor_activity_over_time_{timestamp}.html")
+        else:
+            logger.warning("Skipping sponsor activity over time plot: insufficient data")
+    except Exception as e:
+        logger.error(f"Error creating sponsor activity over time plot: {e}")
+    
     logger.info(f"Created {len(plots)} plots")
     return plots
 
@@ -700,6 +754,26 @@ def generate_static_matplotlib_plots(
     plot_top_sponsors(df, output_dir, top_n=10, timestamp=timestamp)
     plot_status_distribution(df, output_dir, timestamp=timestamp)
     plot_enrollment_by_sponsor(df, output_dir, top_n=5, timestamp=timestamp)
+    
+    # Add: Sponsor activity over time (matplotlib)
+    try:
+        sponsor_year = generate_sponsor_activity_over_time(df, top_n=5)
+        if not sponsor_year.empty:
+            plt.figure(figsize=(12, 7))
+            for sponsor in sponsor_year['lead_sponsor'].unique():
+                data = sponsor_year[sponsor_year['lead_sponsor'] == sponsor]
+                plt.plot(data['year'], data['count'], marker='o', label=sponsor)
+            plt.title('New Clinical Trials per Year by Top 5 Sponsors')
+            plt.xlabel('Year')
+            plt.ylabel('Number of New Trials')
+            plt.legend(title='Sponsor', bbox_to_anchor=(1.05, 1), loc='upper left')
+            plt.tight_layout()
+            plt.savefig(output_dir / f"sponsor_activity_over_time_{timestamp}.png", dpi=300)
+            plt.close()
+        else:
+            logger.warning("Skipping sponsor activity over time static plot: insufficient data")
+    except Exception as e:
+        logger.error(f"Error creating sponsor activity over time static plot: {e}")
     
     logger.info("Static plots generated")
 
