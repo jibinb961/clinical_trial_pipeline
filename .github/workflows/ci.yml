@@ -41,7 +41,7 @@ jobs:
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
       - name: Tag Docker image
-        run: docker tag clinical-trials-pipeline ghcr.io/${{ github.repository_owner }}/clinical-trials-pipeline:latest
+        run: docker tag clinical-trials-pipeline ghcr.io/jibinb961/clinical-trial-pipeline:latest
 
       - name: Push Docker image to GHCR
-        run: docker push ghcr.io/${{ github.repository_owner }}/clinical-trials-pipeline:latest
+        run: docker push ghcr.io/jibinb961/clinical-trial-pipeline:latest
