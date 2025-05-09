@@ -87,6 +87,17 @@ export DISEASE="Familial Hypercholesterolemia"
 export YEAR_START=2008
 export YEAR_END=2023
 export GEMINI_API_KEY="your-api-key"
+MAX_STUDIES = 100 # can be modified
+MAX_PAGES=2 #can be modified
+PREFECT_API_KEY="your-prefect-api-ke"
+PREFECT_WORKSPACE="workspace_slug_here"
+
+# When running inside Docker
+BASE_PATH=/app
+
+# When running locally, comment it out or set to current dir
+ BASE_PATH=.
+
 ```
 
 4. Run the pipeline
