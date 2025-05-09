@@ -19,44 +19,59 @@ graph TD
     
     J --> K[Analysis]
     K --> L[Visualizations]
-    K --> M[Summary Insights]
+    K --> M[Summary Insights using Gemini]
     
     L --> N[Release Artifacts]
     M --> N
     J --> N
-    
-    subgraph Prefect Flow
-    B
-    D
-    G
-    K
+
+    subgraph Prefect_Cloud_Orchestration
+        B
+        D
+        G
+        K
     end
+
+    subgraph CI_CD
+        O[GitHub Actions] --> P[Docker Build]
+        P --> Q[GitHub Container Registry]
+        Q --> R[Prefect Agent Container]
+    end
+
+    R --> Prefect_Cloud_Orchestration
 ```
+
 
 ## Features
 
-- Extracts industry-sponsored, interventional studies for a specified disease
-- Enriches trial data with drug modality and target information using ChEMBL Python client
-- Transforms and loads data into structured formats
-- Analyzes and visualizes trial data with interactive and static charts
-- Delivers artifacts for reporting and sharing
+* ✅ Extracts **industry-sponsored**, **interventional**, human studies for a specified disease
+* 🧠 Enriches interventions with **drug modality and target info** using:
+
+  * 🔬 Primary: ChEMBL Python client
+  * 🤖 Fallback: Google Gemini API
+* 📦 Caches enrichment to **SQLite** to avoid redundant lookups
+* 📊 Generates **interactive (Plotly)** and **static (Matplotlib)** visualizations
+* 📝 Produces detailed **LLM-based insights reports** with Gemini
+* ⚙️ Containerized using **Docker** and deployed with **GitHub Actions**
+* ☁️ Orchestrated using **Prefect Cloud** (optionally migratable to Airflow or GKE)
+* 📁 Release artifacts are stored locally or in cloud-ready structure
 
 ## Quick Start
 
 ### Prerequisites
 
-- Python 3.12
-- Poetry (for dependency management)
-- Prefect 2 (for workflow orchestration)
-- Google Gemini API key (for fallback drug enrichment when ChEMBL has no data)
+* Python 3.12
+* [Poetry](https://python-poetry.org/) for dependency management
+* [Prefect 2](https://docs.prefect.io/) for orchestration
+* Google Gemini API key (used if ChEMBL enrichment fails)
 
 ### Setup
 
 1. Clone the repository
 
 ```bash
-git clone https://github.com/yourusername/clinical-trials-pipeline.git
-cd clinical-trials-pipeline
+git clone https://github.com/yourusername/clinical_trial_pipeline.git
+cd clinical_trial_pipeline
 ```
 
 2. Install dependencies
@@ -65,7 +80,7 @@ cd clinical-trials-pipeline
 poetry install
 ```
 
-3. Set up environment variables (or create a `.env` file)
+3. Configure environment variables (or create a `.env` file)
 
 ```bash
 export DISEASE="Familial Hypercholesterolemia"
@@ -80,12 +95,18 @@ export GEMINI_API_KEY="your-api-key"
 poetry run python -m src.pipeline.flow
 ```
 
-### Using Docker
+### Using Docker (with Prefect Cloud Agent)
 
 ```bash
 docker-compose up
 ```
 
-## License
+## CI/CD (GitHub Actions)
 
-MIT 
+This repository includes a GitHub Actions workflow that:
+
+* Runs tests with Pytest
+* Builds and validates Docker image
+* Publishes image to **GitHub Container Registry (GHCR)**
+
+> You'll need to configure `secrets.GITHUB_TOKEN` for GHCR push access.
