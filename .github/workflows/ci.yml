@@ -11,27 +11,37 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
-      
+
       - name: Set up Python 3.12
         uses: actions/setup-python@v4
         with:
           python-version: '3.12'
-          
+
       - name: Install Poetry
         run: |
           curl -sSL https://install.python-poetry.org | python3 -
-          
+
       - name: Install dependencies
         run: |
           poetry install
-          
+
       - name: Test with pytest
         run: |
           poetry run pytest
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY || 'dummy-key-for-testing' }}
-          
-      - name: Build and test Docker image
-        run: |
-          docker build -t clinical-trials-pipeline .
-          docker run --rm clinical-trials-pipeline python -c "import src.pipeline; print('Docker image is valid')" 
+
+      - name: Build Docker image
+        run: docker build -t clinical-trials-pipeline .
+
+      - name: Run Docker image test
+        run: docker run --rm clinical-trials-pipeline python -c "import src.pipeline; print('Docker image is valid')"
+
+      - name: Log in to GitHub Container Registry
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: Tag Docker image
+        run: docker tag clinical-trials-pipeline ghcr.io/${{ github.repository_owner }}/clinical-trials-pipeline:latest
+
+      - name: Push Docker image to GHCR
+        run: docker push ghcr.io/${{ github.repository_owner }}/clinical-trials-pipeline:latest
