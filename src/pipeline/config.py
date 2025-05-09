@@ -22,19 +22,18 @@ class APIKeys(BaseModel):
 
     gemini: Optional[str] = Field(None, description="Google Gemini API key")
 
-
+BASE_PATH = os.getenv("BASE_PATH", "/app")
 class Paths(BaseModel):
-    """Paths for data storage and outputs."""
+    base: Path = Path(BASE_PATH)
 
-    raw_data: Path = Field(Path("data/raw"), description="Path to raw data")
-    processed_data: Path = Field(Path("data/processed"), description="Path to processed data")
-    cache: Path = Field(Path("data/cache"), description="Path to cache data")
-    figures: Path = Field(Path("data/figures"), description="Path to figures")
-    release: Path = Field(Path("release"), description="Path to release artifacts")
+    raw_data: Path = Field(default_factory=lambda: Path(BASE_PATH) / "data" / "raw")
+    processed_data: Path = Field(default_factory=lambda: Path(BASE_PATH) / "data" / "processed")
+    cache: Path = Field(default_factory=lambda: Path(BASE_PATH) / "data" / "cache")
+    figures: Path = Field(default_factory=lambda: Path(BASE_PATH) / "data" / "figures")
+    release: Path = Field(default_factory=lambda: Path(BASE_PATH) / "release")
 
-    @validator("*")
+    @validator("*", pre=True)
     def create_directories(cls, v: Path) -> Path:
-        """Create directories if they don't exist."""
         v.mkdir(parents=True, exist_ok=True)
         return v
 
