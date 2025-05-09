@@ -2,6 +2,11 @@
 
 import json
 from pathlib import Path
+import sys
+import os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+print("sys.path:", sys.path)
 
 import pandas as pd
 import pytest
@@ -10,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from src.pipeline.config import settings
 from src.pipeline.enrich import Base, DrugCache
+
 
 
 @pytest.fixture
@@ -28,7 +34,7 @@ def sample_clinical_trial():
                 "completionDateStruct": {"date": "2022-01-01"},
             },
             "sponsorCollaboratorsModule": {
-                "leadSponsor": {"name": "Test Pharma Inc."}
+                "leadSponsor": {"name": "Test Pharma Inc.", "class": "INDUSTRY"}
             },
             "conditionsModule": {
                 "conditions": ["Familial Hypercholesterolemia"]
@@ -36,15 +42,16 @@ def sample_clinical_trial():
             "designModule": {
                 "phases": ["Phase 2"],
                 "enrollmentInfo": {"count": 100},
+                "studyType": "INTERVENTIONAL",
             },
             "armsInterventionsModule": {
                 "interventions": [
                     {
-                        "type": "Drug",
+                        "type": "DRUG",
                         "name": "Test Drug A",
                     },
                     {
-                        "type": "Drug",
+                        "type": "DRUG",
                         "name": "Test Drug B",
                     },
                 ],
@@ -133,3 +140,9 @@ def temp_sqlite_db(tmp_path):
         session.commit()
     
     return str(db_path) 
+
+def test_sample_clinical_trial_fixture(sample_clinical_trial):
+    assert isinstance(sample_clinical_trial, dict)
+    assert "protocolSection" in sample_clinical_trial
+    assert "identificationModule" in sample_clinical_trial["protocolSection"]
+    assert "nctId" in sample_clinical_trial["protocolSection"]["identificationModule"] 

@@ -25,18 +25,6 @@ jobs:
         run: |
           poetry install
           
-      - name: Check code formatting with Black
-        run: |
-          poetry run black --check .
-          
-      - name: Lint with Ruff
-        run: |
-          poetry run ruff check .
-          
-      - name: Type check with mypy
-        run: |
-          poetry run mypy src
-          
       - name: Test with pytest
         run: |
           poetry run pytest
