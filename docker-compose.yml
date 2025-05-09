@@ -1,43 +1,18 @@
-version: '3'
-
 services:
-  prefect-server:
-    image: prefecthq/prefect:2.14.4-python3.12
-    ports:
-      - "4200:4200"
-    volumes:
-      - prefect-data:/root/.prefect
-    environment:
-      - PREFECT_SERVER_API_HOST=0.0.0.0
-      - PREFECT_UI_API_URL=http://localhost:4200/api
-    command: prefect server start
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:4200/api/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-
   clinical-trials:
     build: .
-    depends_on:
-      prefect-server:
-        condition: service_healthy
+    env_file:
+      - .env
     volumes:
       - ./data:/app/data
       - ./release:/app/release
     environment:
-      - PREFECT_API_URL=http://prefect-server:4200/api
-      - DISEASE=${DISEASE:-Familial Hypercholesterolemia}
-      - YEAR_START=${YEAR_START:-2008}
-      - YEAR_END=${YEAR_END:-2023}
+      - DISEASE=Familial Hypercholesterolemia
+      - YEAR_START=2008
+      - YEAR_END=2023
       - GEMINI_API_KEY=${GEMINI_API_KEY}
-      - LOG_LEVEL=${LOG_LEVEL:-INFO}
-    command: >
-      bash -c "
-        python -m prefect.cli deployment build src.pipeline.flow:clinical_trials_pipeline -n default -q default &&
-        python -m prefect.cli deployment apply clinical_trials_pipeline-deployment.yaml &&
-        python -m prefect.cli agent start -q default
-      "
-
-volumes:
-  prefect-data: 
+      - PREFECT_API_KEY=${PREFECT_API_KEY}
+      - PREFECT_WORKSPACE=${PREFECT_WORKSPACE}
+      - LOG_LEVEL=INFO
+    ports:
+      - "8501:8501" # Optional if you serve a Streamlit app later
