@@ -7,7 +7,7 @@ on:
     branches: [ main ]
 
 jobs:
-  test:
+  Test and Deploy:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
@@ -32,16 +32,16 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY || 'dummy-key-for-testing' }}
 
       - name: Build Docker image
-        run: docker build -t clinical-trials-pipeline .
+        run: docker build -t clinical_trial_pipeline .
 
       - name: Run Docker image test
-        run: docker run --rm clinical-trials-pipeline python -c "import src.pipeline; print('Docker image is valid')"
+        run: docker run --rm clinical_trial_pipeline python -c "import src.pipeline; print('Docker image is valid')"
 
-      - name: Log in to GitHub Container Registry
+      - name: Log in to GitHub Container Registry (GHCR)
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
-      - name: Tag Docker image
-        run: docker tag clinical-trials-pipeline ghcr.io/jibinb961/clinical-trial-pipeline:latest
+      - name: Tag Docker image for GHCR
+        run: docker tag clinical_trial_pipeline ghcr.io/jibinb961/clinical_trial_pipeline:latest
 
       - name: Push Docker image to GHCR
-        run: docker push ghcr.io/jibinb961/clinical-trial-pipeline:latest
+        run: docker push ghcr.io/jibinb961/clinical_trial_pipeline:latest
