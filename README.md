@@ -83,10 +83,10 @@ poetry install
 3. Configure environment variables (or create a `.env` file)
 
 ```bash
-export DISEASE="Familial Hypercholesterolemia"
-export YEAR_START=2008
-export YEAR_END=2023
-export GEMINI_API_KEY="your-api-key"
+DISEASE="Familial Hypercholesterolemia"
+YEAR_START=2008
+YEAR_END=2023
+GEMINI_API_KEY="your-api-key"
 MAX_STUDIES = 100 # can be modified
 MAX_PAGES=2 #can be modified
 PREFECT_API_KEY="your-prefect-api-ke"
