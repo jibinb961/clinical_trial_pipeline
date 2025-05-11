@@ -374,6 +374,8 @@ def transform_clinical_trials(
         # Extract phases - take the first phase if available
         phases = design_module.get("phases", [])
         study_data["phase"] = phases[0] if phases else None
+        # Set study_phase for downstream compatibility
+        study_data["study_phase"] = study_data["phase"]
         
         # Extract collaborators
         collaborators = sponsor_module.get("collaborators", [])
@@ -396,14 +398,16 @@ def transform_clinical_trials(
                 })
         
         # Parse dates
-        study_data["start_date_parsed"] = parse_date(study_data["start_date"])
-        study_data["completion_date_parsed"] = parse_date(study_data["completion_date"])
-        
-        # Calculate duration in days if both dates are available
-        if study_data["start_date_parsed"] and study_data["completion_date_parsed"]:
-            study_data["duration_days"] = (
-                study_data["completion_date_parsed"] - study_data["start_date_parsed"]
-            ).days
+        start_date = status_module.get("startDateStruct", {}).get("date")
+        completion_date = status_module.get("completionDateStruct", {}).get("date")
+        primary_completion_date = status_module.get("primaryCompletionDateStruct", {}).get("date")
+        start_date_parsed = parse_date(start_date)
+        completion_date_parsed = parse_date(completion_date)
+        primary_completion_date_parsed = parse_date(primary_completion_date)
+        # Use completion_date if available, else primary_completion_date
+        end_date_parsed = completion_date_parsed or primary_completion_date_parsed
+        if start_date_parsed and end_date_parsed:
+            study_data["duration_days"] = (end_date_parsed - start_date_parsed).days
         else:
             study_data["duration_days"] = None
         

@@ -17,10 +17,13 @@ import pandas as pd
 import plotly.express as px
 from plotly.graph_objects import Figure as PlotlyFigure
 import plotly.graph_objects as go
+import re
+from collections import Counter
 
 
 from src.pipeline.config import settings
 from src.pipeline.utils import get_timestamp, log_execution_time, logger
+from src.pipeline.gemini_utils import cluster_outcomes_with_gemini
 
 
 def get_year_from_date(date_str: Optional[str]) -> Optional[int]:
@@ -322,6 +325,93 @@ def generate_sankey_data(df: pd.DataFrame, top_n: int = 5):
     return sankey_df, top_sponsors, top_modalities, top_targets
 
 
+def normalize_outcome_text(text):
+    if not isinstance(text, str):
+        return ""
+    # Lowercase, remove punctuation, strip whitespace
+    text = text.lower()
+    text = re.sub(r"[\W_]+", " ", text)  # Remove punctuation
+    text = text.strip()
+    return text
+
+
+def plot_top_outcomes_normalized(df: pd.DataFrame, outcome_col: str, title: str, top_n: int = 10):
+    """Horizontal bar chart of top N normalized outcome measures (primary or secondary)."""
+    # Flatten and normalize the list of outcomes
+    all_outcomes = [normalize_outcome_text(item) for sublist in df[outcome_col].dropna() for item in (sublist if isinstance(sublist, list) else [sublist])]
+    all_outcomes = [x for x in all_outcomes if x]
+    if not all_outcomes:
+        return None
+    outcome_counts = Counter(all_outcomes).most_common(top_n)
+    outcome_df = pd.DataFrame(outcome_counts, columns=["Outcome Measure", "Count"])
+    fig = px.bar(
+        outcome_df,
+        x="Count",
+        y="Outcome Measure",
+        orientation="h",
+        title=title + " (Normalized)",
+        labels={"Outcome Measure": "Outcome Measure", "Count": "Count"},
+    )
+    fig.update_layout(height=500, yaxis={'categoryorder':'total ascending'})
+    return fig
+
+
+try:
+    from wordcloud import WordCloud
+    WORDCLOUD_AVAILABLE = True
+except ImportError:
+    WORDCLOUD_AVAILABLE = False
+
+def plot_outcome_wordcloud(df: pd.DataFrame, outcome_col: str, title: str):
+    """Generate a word cloud from normalized outcome measures."""
+    if not WORDCLOUD_AVAILABLE:
+        return None
+    all_outcomes = [normalize_outcome_text(item) for sublist in df[outcome_col].dropna() for item in (sublist if isinstance(sublist, list) else [sublist])]
+    text = " ".join(all_outcomes)
+    if not text.strip():
+        return None
+    wc = WordCloud(width=800, height=400, background_color='white').generate(text)
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.imshow(wc, interpolation='bilinear')
+    ax.axis('off')
+    ax.set_title(title + " (Word Cloud)")
+    return fig
+
+
+def plot_age_distribution(df: pd.DataFrame):
+    """Boxplot and histogram for minimum and maximum age (in years)."""
+    age_df = df[['minimum_age', 'maximum_age']].copy()
+    # Melt for boxplot
+    melted = age_df.melt(var_name='Age Type', value_name='Age (years)')
+    melted = melted.dropna(subset=['Age (years)'])
+    if melted.empty:
+        return None, None
+    box = px.box(melted, x='Age Type', y='Age (years)', title='Age Distribution (Boxplot)')
+    hist = px.histogram(melted, x='Age (years)', color='Age Type', barmode='overlay', nbins=20, title='Age Distribution (Histogram)')
+    return box, hist
+
+
+def plot_age_group_distribution(df: pd.DataFrame):
+    """Bar chart for age group (categorical) distribution."""
+    if 'age_groups' not in df.columns:
+        return None
+    # Explode the list of age groups for counting
+    exploded = df.explode('age_groups')
+    group_counts = exploded['age_groups'].value_counts().reset_index()
+    group_counts.columns = ['Age Group', 'Count']
+    if group_counts.empty:
+        return None
+    fig = px.bar(
+        group_counts,
+        x='Age Group',
+        y='Count',
+        title='Distribution of Age Groups in Trials',
+        labels={'Age Group': 'Age Group', 'Count': 'Number of Trials'},
+    )
+    fig.update_layout(xaxis_tickangle=-30, height=500)
+    return fig
+
+
 @log_execution_time
 def create_plots(
     df: pd.DataFrame, output_dir: Optional[Path] = None
@@ -408,25 +498,27 @@ def create_plots(
             duration_data = df.dropna(subset=["duration_days", "study_phase"]).copy()
             
             if not duration_data.empty:
-                # Simplify phases for better visualization
-                phase_mapping = {
-                    "Phase 1": "Phase 1",
-                    "Phase 1/Phase 2": "Phase 1/2",
-                    "Phase 2": "Phase 2",
-                    "Phase 2/Phase 3": "Phase 2/3",
-                    "Phase 3": "Phase 3",
-                    "Phase 4": "Phase 4",
-                    "Not Applicable": "N/A",
-                }
-                
-                # Apply simplified phases
-                duration_data["simplified_phase"] = duration_data["study_phase"].map(
-                    lambda x: phase_mapping.get(x, "Other")
-                )
-                
+                # --- UPDATED phase mapping for uppercase and variants ---
+                def map_phase(phase):
+                    if not isinstance(phase, str):
+                        return "Other"
+                    p = phase.strip().upper()
+                    mapping = {
+                        "PHASE1": "Phase 1",
+                        "PHASE2": "Phase 2",
+                        "PHASE3": "Phase 3",
+                        "PHASE4": "Phase 4",
+                        "PHASE1/PHASE2": "Phase 1/2",
+                        "PHASE2/PHASE3": "Phase 2/3",
+                        "PHASE1/PHASE2/PHASE3": "Phase 1/2/3",
+                        "NOT APPLICABLE": "N/A",
+                        "N/A": "N/A",
+                        "EARLY PHASE 1": "Early Phase 1",
+                    }
+                    return mapping.get(p, "Other")
+                duration_data["simplified_phase"] = duration_data["study_phase"].map(map_phase)
                 # Order phases logically
-                phase_order = ["Phase 1", "Phase 1/2", "Phase 2", "Phase 2/3", "Phase 3", "Phase 4", "N/A", "Other"]
-                
+                phase_order = ["Phase 1", "Phase 1/2", "Phase 2", "Phase 2/3", "Phase 3", "Phase 4", "N/A", "Early Phase 1", "Other", "Phase 1/2/3"]
                 # Create boxplot
                 fig_duration = px.box(
                     duration_data,
@@ -707,6 +799,93 @@ def create_plots(
             logger.warning("Skipping Sankey plot: insufficient data")
     except Exception as e:
         logger.error(f"Error creating Sankey plot: {e}")
+    
+    # Add: Top Primary Outcomes (normalized)
+    try:
+        if 'primary_outcomes' in df.columns:
+            fig_primary_norm = plot_top_outcomes_normalized(df, 'primary_outcomes', 'Top Primary Outcome Measures')
+            if fig_primary_norm:
+                plots['top_primary_outcomes_normalized'] = fig_primary_norm
+                fig_primary_norm.write_html(output_dir / f"top_primary_outcomes_normalized_{timestamp}.html")
+            # Word cloud
+            fig_wc = plot_outcome_wordcloud(df, 'primary_outcomes', 'Top Primary Outcome Measures')
+            if fig_wc:
+                fig_wc_path = output_dir / f"top_primary_outcomes_wordcloud_{timestamp}.png"
+                fig_wc.savefig(fig_wc_path, bbox_inches='tight')
+                plt.close(fig_wc)
+    except Exception as e:
+        logger.error(f"Error creating normalized primary outcomes plot: {e}")
+    # Add: Top Secondary Outcomes (normalized)
+    try:
+        if 'secondary_outcomes' in df.columns:
+            fig_secondary_norm = plot_top_outcomes_normalized(df, 'secondary_outcomes', 'Top Secondary Outcome Measures')
+            if fig_secondary_norm:
+                plots['top_secondary_outcomes_normalized'] = fig_secondary_norm
+                fig_secondary_norm.write_html(output_dir / f"top_secondary_outcomes_normalized_{timestamp}.html")
+            # Word cloud
+            fig_wc = plot_outcome_wordcloud(df, 'secondary_outcomes', 'Top Secondary Outcome Measures')
+            if fig_wc:
+                fig_wc_path = output_dir / f"top_secondary_outcomes_wordcloud_{timestamp}.png"
+                fig_wc.savefig(fig_wc_path, bbox_inches='tight')
+                plt.close(fig_wc)
+    except Exception as e:
+        logger.error(f"Error creating normalized secondary outcomes plot: {e}")
+    # Add: Age Distribution
+    try:
+        if 'minimum_age' in df.columns and 'maximum_age' in df.columns:
+            fig_age_box, fig_age_hist = plot_age_distribution(df)
+            if fig_age_box:
+                plots['age_boxplot'] = fig_age_box
+                # Save as HTML
+                fig_age_box.write_html(output_dir / f"age_boxplot_{timestamp}.html")
+            if fig_age_hist:
+                plots['age_histogram'] = fig_age_hist
+                # Save as HTML
+                fig_age_hist.write_html(output_dir / f"age_histogram_{timestamp}.html")
+    except Exception as e:
+        logger.error(f"Error creating age distribution plots: {e}")
+    
+    # Add: Age Group Distribution (categorical)
+    try:
+        if 'age_groups' in df.columns:
+            fig_age_group = plot_age_group_distribution(df)
+            if fig_age_group:
+                plots['age_group_distribution'] = fig_age_group
+                # Save as HTML
+                fig_age_group.write_html(output_dir / f"age_group_distribution_{timestamp}.html")
+    except Exception as e:
+        logger.error(f"Error creating age group distribution plot: {e}")
+    
+    # Add: Top Primary Outcomes (canonical)
+    try:
+        if 'primary_outcome_canonical' in df.columns:
+            fig_primary_canon = plot_top_canonical_outcomes(df, 'primary_outcome_canonical', 'Top Primary Outcome Measures')
+            if fig_primary_canon:
+                plots['top_primary_outcomes_canonical'] = fig_primary_canon
+                fig_primary_canon.write_html(output_dir / f"top_primary_outcomes_canonical_{timestamp}.html")
+            # Word cloud
+            fig_wc = plot_canonical_outcome_wordcloud(df, 'primary_outcome_canonical', 'Top Primary Outcome Measures')
+            if fig_wc:
+                fig_wc_path = output_dir / f"top_primary_outcomes_canonical_wordcloud_{timestamp}.png"
+                fig_wc.savefig(fig_wc_path, bbox_inches='tight')
+                plt.close(fig_wc)
+    except Exception as e:
+        logger.error(f"Error creating canonical primary outcomes plot: {e}")
+    # Add: Top Secondary Outcomes (canonical)
+    try:
+        if 'secondary_outcome_canonical' in df.columns:
+            fig_secondary_canon = plot_top_canonical_outcomes(df, 'secondary_outcome_canonical', 'Top Secondary Outcome Measures')
+            if fig_secondary_canon:
+                plots['top_secondary_outcomes_canonical'] = fig_secondary_canon
+                fig_secondary_canon.write_html(output_dir / f"top_secondary_outcomes_canonical_{timestamp}.html")
+            # Word cloud
+            fig_wc = plot_canonical_outcome_wordcloud(df, 'secondary_outcome_canonical', 'Top Secondary Outcome Measures')
+            if fig_wc:
+                fig_wc_path = output_dir / f"top_secondary_outcomes_canonical_wordcloud_{timestamp}.png"
+                fig_wc.savefig(fig_wc_path, bbox_inches='tight')
+                plt.close(fig_wc)
+    except Exception as e:
+        logger.error(f"Error creating canonical secondary outcomes plot: {e}")
     
     logger.info(f"Created {len(plots)} plots")
     return plots
@@ -995,6 +1174,16 @@ def analyze_trials(
             "phase_counts": {}
         }
     
+    # --- NEW: Quantitative summary extraction ---
+    modalities = get_unique_flat_list(df, 'modalities') if 'modalities' in df.columns else []
+    targets = get_unique_flat_list(df, 'targets') if 'targets' in df.columns else []
+    primary_outcomes = get_unique_flat_list(df, 'primary_outcomes') if 'primary_outcomes' in df.columns else []
+    secondary_outcomes = get_unique_flat_list(df, 'secondary_outcomes') if 'secondary_outcomes' in df.columns else []
+    sponsors = get_unique_sponsors(df)
+    min_age_quartiles = get_age_quartiles(df, 'minimum_age') if 'minimum_age' in df.columns else None
+    max_age_quartiles = get_age_quartiles(df, 'maximum_age') if 'maximum_age' in df.columns else None
+    # --- END NEW ---
+    
     # Create plots - catch any exceptions so the pipeline doesn't fail
     try:
         plots = create_plots(df)
@@ -1022,14 +1211,58 @@ def analyze_trials(
         Error: {str(e)}
         """
     
+    # --- NEW: Compose quantitative summary markdown ---
+    quantitative_md = f"""
+## Quantitative Summary
+
+- **Number of explored modalities:** {len(modalities)}
+- **List of modalities:** {', '.join(modalities) if modalities else 'N/A'}
+- **Number of biological targets:** {len(targets)}
+- **List of targets:** {', '.join(targets) if targets else 'N/A'}
+- **Number of primary outcome measures:** {len(primary_outcomes)}
+- **List of primary outcome measures:** {', '.join(primary_outcomes) if primary_outcomes else 'N/A'}
+- **Number of secondary outcome measures:** {len(secondary_outcomes)}
+- **List of secondary outcome measures:** {', '.join(secondary_outcomes) if secondary_outcomes else 'N/A'}
+- **Number of sponsors:** {len(sponsors)}
+- **List of sponsors:** {', '.join(sponsors) if sponsors else 'N/A'}
+"""
+    if min_age_quartiles:
+        quantitative_md += f"""
+- **Minimum Age (years):** min={min_age_quartiles['min']:.2f}, Q1={min_age_quartiles['q1']:.2f}, median={min_age_quartiles['median']:.2f}, Q3={min_age_quartiles['q3']:.2f}, max={min_age_quartiles['max']:.2f}, mean={min_age_quartiles['mean']:.2f} (n={min_age_quartiles['count']})
+"""
+    if max_age_quartiles:
+        quantitative_md += f"""
+- **Maximum Age (years):** min={max_age_quartiles['min']:.2f}, Q1={max_age_quartiles['q1']:.2f}, median={max_age_quartiles['median']:.2f}, Q3={max_age_quartiles['q3']:.2f}, max={max_age_quartiles['max']:.2f}, mean={max_age_quartiles['mean']:.2f} (n={max_age_quartiles['count']})
+"""
+    # Enrollment and duration quartiles (already in summary_stats)
+    if 'enrollment' in summary_stats:
+        e = summary_stats['enrollment']
+        quantitative_md += f"""
+- **Enrollment (number of patients):** min={e['min']:.2f}, Q1={e['q1']:.2f}, median={e['median']:.2f}, Q3={e['q3']:.2f}, max={e['max']:.2f}, mean={e['mean']:.2f}
+"""
+    if 'duration_days' in summary_stats:
+        d = summary_stats['duration_days']
+        quantitative_md += f"""
+- **Trial Duration (days):** min={d['min']:.2f}, Q1={d['q1']:.2f}, median={d['median']:.2f}, Q3={d['q3']:.2f}, max={d['max']:.2f}, mean={d['mean']:.2f}
+"""
+    # Age group (stdAges) distribution
+    if 'age_groups' in df.columns:
+        from collections import Counter
+        all_groups = [g for sublist in df['age_groups'].dropna() for g in (sublist if isinstance(sublist, list) else [sublist])]
+        group_counts = Counter(all_groups)
+        if group_counts:
+            quantitative_md += "\n- **Age group distribution:**\n"
+            for group, count in group_counts.items():
+                quantitative_md += f"    - {group}: {count} studies\n"
+    # --- END NEW ---
+    # Compose final insights (prepend quantitative summary)
+    final_insights = quantitative_md + "\n" + insights
     # Create directories if they don't exist
     settings.paths.processed_data.mkdir(parents=True, exist_ok=True)
-    
     # Save insights to file
     insights_path = settings.paths.processed_data / f"insights_{timestamp}.md"
     with open(insights_path, "w") as f:
-        f.write(insights)
-    
+        f.write(final_insights)
     # Save summary stats to file
     stats_path = settings.paths.processed_data / f"stats_{timestamp}.json"
     import json
@@ -1045,9 +1278,150 @@ def analyze_trials(
             elif isinstance(obj, dict):
                 return {k: convert_to_native(v) for k, v in obj.items()}
             return obj
-        
         json.dump(convert_to_native(summary_stats), f, indent=2)
-    
     logger.info(f"Analysis completed and saved to {insights_path} and {stats_path}")
-    
-    return summary_stats, insights 
+    return summary_stats, final_insights
+
+
+def extract_outcomes_for_clustering(df: pd.DataFrame, outcome_col: str) -> list:
+    """
+    Extract all unique outcomes (with measure, description, timeframe) for clustering.
+    Returns a list of dicts with keys: measure, description, timeFrame
+    """
+    unique_outcomes = set()
+    outcome_dicts = []
+    for outcomes in df[outcome_col].dropna():
+        if isinstance(outcomes, list):
+            for o in outcomes:
+                if isinstance(o, dict):
+                    key = (o.get('measure', ''), o.get('description', ''), o.get('timeFrame', ''))
+                    if key not in unique_outcomes:
+                        unique_outcomes.add(key)
+                        outcome_dicts.append({
+                            'measure': o.get('measure', ''),
+                            'description': o.get('description', ''),
+                            'timeFrame': o.get('timeFrame', '')
+                        })
+                elif isinstance(o, str):
+                    key = (o, '', '')
+                    if key not in unique_outcomes:
+                        unique_outcomes.add(key)
+                        outcome_dicts.append({'measure': o, 'description': '', 'timeFrame': ''})
+        elif isinstance(outcomes, dict):
+            key = (outcomes.get('measure', ''), outcomes.get('description', ''), outcomes.get('timeFrame', ''))
+            if key not in unique_outcomes:
+                unique_outcomes.add(key)
+                outcome_dicts.append({
+                    'measure': outcomes.get('measure', ''),
+                    'description': outcomes.get('description', ''),
+                    'timeFrame': outcomes.get('timeFrame', '')
+                })
+        elif isinstance(outcomes, str):
+            key = (outcomes, '', '')
+            if key not in unique_outcomes:
+                unique_outcomes.add(key)
+                outcome_dicts.append({'measure': outcomes, 'description': '', 'timeFrame': ''})
+    return outcome_dicts
+
+
+def map_canonical_outcomes(df: pd.DataFrame, outcome_col: str, mapping: dict, new_label_col: str, new_summary_col: str):
+    """
+    Map canonical label and summary to each outcome in the DataFrame using the Gemini mapping.
+    Adds new columns to the DataFrame for each outcome type.
+    """
+    def map_outcome_list(outcomes):
+        if not isinstance(outcomes, list):
+            return [], []
+        labels, summaries = [], []
+        for o in outcomes:
+            if isinstance(o, dict):
+                key = " | ".join(filter(None, [o.get('measure', ''), f"Description: {o.get('description', '')}" if o.get('description', '') else '', f"Timeframe: {o.get('timeFrame', '')}" if o.get('timeFrame', '') else '']))
+            elif isinstance(o, str):
+                key = o
+            else:
+                key = str(o)
+            result = mapping.get(key, {})
+            labels.append(result.get('canonical', ''))
+            summaries.append(result.get('summary', ''))
+        return labels, summaries
+    df[new_label_col], df[new_summary_col] = zip(*df[outcome_col].apply(map_outcome_list))
+    return df 
+
+
+def plot_top_canonical_outcomes(df: pd.DataFrame, canonical_col: str, title: str, top_n: int = 10):
+    """Horizontal bar chart of top N canonical outcome labels (primary or secondary)."""
+    all_labels = [item for sublist in df[canonical_col].dropna() for item in (sublist if isinstance(sublist, list) else [sublist])]
+    all_labels = [x for x in all_labels if x]
+    if not all_labels:
+        return None
+    outcome_counts = Counter(all_labels).most_common(top_n)
+    outcome_df = pd.DataFrame(outcome_counts, columns=["Canonical Outcome", "Count"])
+    fig = px.bar(
+        outcome_df,
+        x="Count",
+        y="Canonical Outcome",
+        orientation="h",
+        title=title + " (Canonical)",
+        labels={"Canonical Outcome": "Outcome", "Count": "Count"},
+    )
+    fig.update_layout(height=500, yaxis={'categoryorder':'total ascending'})
+    return fig
+
+
+def plot_canonical_outcome_wordcloud(df: pd.DataFrame, canonical_col: str, title: str):
+    """Generate a word cloud from canonical outcome labels."""
+    try:
+        from wordcloud import WordCloud
+        import matplotlib.pyplot as plt
+    except ImportError:
+        return None
+    all_labels = [item for sublist in df[canonical_col].dropna() for item in (sublist if isinstance(sublist, list) else [sublist])]
+    text = " ".join(all_labels)
+    if not text.strip():
+        return None
+    wc = WordCloud(width=800, height=400, background_color='white').generate(text)
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.imshow(wc, interpolation='bilinear')
+    ax.axis('off')
+    ax.set_title(title + " (Word Cloud)")
+    return fig 
+
+# --- NEW: Helper functions for extracting unique lists and quartiles ---
+def get_unique_flat_list(df, col):
+    """Extract a flat set of unique items from a column of lists."""
+    items = set()
+    for val in df[col].dropna():
+        if isinstance(val, list):
+            items.update(val)
+        elif isinstance(val, str):
+            items.add(val)
+    return sorted(items)
+
+def get_age_quartiles(df, col):
+    """Calculate quartiles, min, max, mean for an age column (in years)."""
+    import numpy as np
+    arr = df[col].dropna().astype(float)
+    if arr.empty:
+        return None
+    return {
+        'min': float(arr.min()),
+        'q1': float(np.percentile(arr, 25)),
+        'median': float(np.percentile(arr, 50)),
+        'q3': float(np.percentile(arr, 75)),
+        'max': float(arr.max()),
+        'mean': float(arr.mean()),
+        'count': int(arr.count()),
+    }
+
+def get_unique_sponsors(df):
+    """Get unique sponsors from lead_sponsor and collaborators."""
+    sponsors = set(df['lead_sponsor'].dropna().unique()) if 'lead_sponsor' in df.columns else set()
+    if 'collaborators' in df.columns:
+        for val in df['collaborators'].dropna():
+            if isinstance(val, list):
+                sponsors.update(val)
+            elif isinstance(val, str):
+                sponsors.add(val)
+    return sorted(sponsors)
+
+# --- END NEW HELPERS --- 
