@@ -1174,14 +1174,29 @@ def analyze_trials(
             "phase_counts": {}
         }
     
-    # --- NEW: Quantitative summary extraction ---
+    # --- NEW: Define variables for summary and plotting ---
     modalities = get_unique_flat_list(df, 'modalities') if 'modalities' in df.columns else []
     targets = get_unique_flat_list(df, 'targets') if 'targets' in df.columns else []
-    primary_outcomes = get_unique_flat_list(df, 'primary_outcomes') if 'primary_outcomes' in df.columns else []
-    secondary_outcomes = get_unique_flat_list(df, 'secondary_outcomes') if 'secondary_outcomes' in df.columns else []
+    primary_outcomes = flatten_outcome_measures(df, 'primary_outcomes') if 'primary_outcomes' in df.columns else []
+    secondary_outcomes = flatten_outcome_measures(df, 'secondary_outcomes') if 'secondary_outcomes' in df.columns else []
     sponsors = get_unique_sponsors(df)
-    min_age_quartiles = get_age_quartiles(df, 'minimum_age') if 'minimum_age' in df.columns else None
-    max_age_quartiles = get_age_quartiles(df, 'maximum_age') if 'maximum_age' in df.columns else None
+    # --- END NEW ---
+    
+    # --- NEW: Quantitative summary extraction and visualizations ---
+    output_dir = settings.paths.figures
+    if timestamp is None:
+        timestamp = get_timestamp()
+    # Age
+    if 'minimum_age' in df.columns:
+        plot_age_hist_box(df, 'minimum_age', output_dir, timestamp)
+    if 'maximum_age' in df.columns:
+        plot_age_hist_box(df, 'maximum_age', output_dir, timestamp)
+    plot_std_age_bar(df, output_dir, timestamp)
+    # Enrollment
+    plot_enrollment_hist(df, output_dir, timestamp)
+    # Outcomes
+    plot_outcome_wordcloud_and_bar(primary_outcomes, 'Primary Outcome Measures', output_dir, timestamp)
+    plot_outcome_wordcloud_and_bar(secondary_outcomes, 'Secondary Outcome Measures', output_dir, timestamp)
     # --- END NEW ---
     
     # Create plots - catch any exceptions so the pipeline doesn't fail
@@ -1226,12 +1241,16 @@ def analyze_trials(
 - **Number of sponsors:** {len(sponsors)}
 - **List of sponsors:** {', '.join(sponsors) if sponsors else 'N/A'}
 """
-    if min_age_quartiles:
-        quantitative_md += f"""
+    if 'minimum_age' in df.columns:
+        min_age_quartiles = get_age_quartiles(df, 'minimum_age')
+        if min_age_quartiles:
+            quantitative_md += f"""
 - **Minimum Age (years):** min={min_age_quartiles['min']:.2f}, Q1={min_age_quartiles['q1']:.2f}, median={min_age_quartiles['median']:.2f}, Q3={min_age_quartiles['q3']:.2f}, max={min_age_quartiles['max']:.2f}, mean={min_age_quartiles['mean']:.2f} (n={min_age_quartiles['count']})
 """
-    if max_age_quartiles:
-        quantitative_md += f"""
+    if 'maximum_age' in df.columns:
+        max_age_quartiles = get_age_quartiles(df, 'maximum_age')
+        if max_age_quartiles:
+            quantitative_md += f"""
 - **Maximum Age (years):** min={max_age_quartiles['min']:.2f}, Q1={max_age_quartiles['q1']:.2f}, median={max_age_quartiles['median']:.2f}, Q3={max_age_quartiles['q3']:.2f}, max={max_age_quartiles['max']:.2f}, mean={max_age_quartiles['mean']:.2f} (n={max_age_quartiles['count']})
 """
     # Enrollment and duration quartiles (already in summary_stats)
@@ -1400,17 +1419,17 @@ def get_unique_flat_list(df, col):
 def get_age_quartiles(df, col):
     """Calculate quartiles, min, max, mean for an age column (in years)."""
     import numpy as np
-    arr = df[col].dropna().astype(float)
-    if arr.empty:
+    vals = pd.to_numeric(df[col], errors='coerce').dropna()
+    if vals.empty:
         return None
     return {
-        'min': float(arr.min()),
-        'q1': float(np.percentile(arr, 25)),
-        'median': float(np.percentile(arr, 50)),
-        'q3': float(np.percentile(arr, 75)),
-        'max': float(arr.max()),
-        'mean': float(arr.mean()),
-        'count': int(arr.count()),
+        'min': float(vals.min()),
+        'q1': float(np.percentile(vals, 25)),
+        'median': float(np.percentile(vals, 50)),
+        'q3': float(np.percentile(vals, 75)),
+        'max': float(vals.max()),
+        'mean': float(vals.mean()),
+        'count': int(vals.count()),
     }
 
 def get_unique_sponsors(df):
@@ -1423,5 +1442,105 @@ def get_unique_sponsors(df):
             elif isinstance(val, str):
                 sponsors.add(val)
     return sorted(sponsors)
+
+def plot_age_hist_box(df, col, output_dir, timestamp):
+    vals = pd.to_numeric(df[col], errors='coerce').dropna()
+    if vals.empty:
+        return
+    plt.figure(figsize=(8, 4))
+    plt.hist(vals, bins=20, color='skyblue', edgecolor='black')
+    plt.title(f"{col.replace('_', ' ').title()} Distribution (Histogram)")
+    plt.xlabel("Age (years)")
+    plt.ylabel("Count")
+    plt.tight_layout()
+    plt.savefig(output_dir / f"{col}_hist_{timestamp}.png", dpi=300)
+    plt.close()
+    plt.figure(figsize=(6, 4))
+    plt.boxplot(vals, vert=False)
+    plt.title(f"{col.replace('_', ' ').title()} Distribution (Boxplot)")
+    plt.xlabel("Age (years)")
+    plt.tight_layout()
+    plt.savefig(output_dir / f"{col}_box_{timestamp}.png", dpi=300)
+    plt.close()
+
+def plot_std_age_bar(df, output_dir, timestamp):
+    if 'age_groups' not in df.columns:
+        return
+    exploded = df.explode('age_groups')
+    group_counts = exploded['age_groups'].value_counts()
+    if group_counts.empty:
+        return
+    plt.figure(figsize=(7, 4))
+    group_counts.plot(kind='bar', color='orchid')
+    plt.title("Standard Age Group Distribution")
+    plt.xlabel("Age Group")
+    plt.ylabel("Number of Trials")
+    plt.tight_layout()
+    plt.savefig(output_dir / f"std_age_group_bar_{timestamp}.png", dpi=300)
+    plt.close()
+
+def plot_enrollment_hist(df, output_dir, timestamp):
+    col = 'enrollment_count' if 'enrollment_count' in df.columns else 'enrollment'
+    if col not in df.columns:
+        return
+    vals = pd.to_numeric(df[col], errors='coerce').dropna()
+    if vals.empty:
+        return
+    plt.figure(figsize=(8, 4))
+    plt.hist(vals, bins=20, color='lightgreen', edgecolor='black')
+    plt.title("Enrollment Distribution (Histogram)")
+    plt.xlabel("Enrollment Count")
+    plt.ylabel("Count")
+    plt.tight_layout()
+    plt.savefig(output_dir / f"enrollment_hist_{timestamp}.png", dpi=300)
+    plt.close()
+
+def flatten_outcome_measures(df, col):
+    # Flattens and cleans outcome measures (list of dicts or strings)
+    outcomes = []
+    for val in df[col].dropna():
+        if isinstance(val, list):
+            for o in val:
+                if isinstance(o, dict):
+                    if o.get('measure'):
+                        outcomes.append(o['measure'])
+                elif isinstance(o, str):
+                    outcomes.append(o)
+        elif isinstance(val, dict):
+            if val.get('measure'):
+                outcomes.append(val['measure'])
+        elif isinstance(val, str):
+            outcomes.append(val)
+    return outcomes
+
+def plot_outcome_wordcloud_and_bar(outcomes, title, output_dir, timestamp, top_n=20):
+    from collections import Counter
+    if not outcomes:
+        return
+    # Bar chart
+    counts = Counter(outcomes)
+    top = counts.most_common(top_n)
+    labels, values = zip(*top)
+    plt.figure(figsize=(10, 6))
+    plt.barh(labels[::-1], values[::-1], color='cornflowerblue')
+    plt.title(f"Top {top_n} {title}")
+    plt.xlabel("Count")
+    plt.tight_layout()
+    plt.savefig(output_dir / f"top_{title.replace(' ', '_').lower()}_bar_{timestamp}.png", dpi=300)
+    plt.close()
+    # Word cloud
+    try:
+        from wordcloud import WordCloud
+        text = " ".join(outcomes)
+        wc = WordCloud(width=800, height=400, background_color='white').generate(text)
+        plt.figure(figsize=(10, 5))
+        plt.imshow(wc, interpolation='bilinear')
+        plt.axis('off')
+        plt.title(f"{title} (Word Cloud)")
+        plt.tight_layout()
+        plt.savefig(output_dir / f"{title.replace(' ', '_').lower()}_wordcloud_{timestamp}.png", bbox_inches='tight')
+        plt.close()
+    except ImportError:
+        pass
 
 # --- END NEW HELPERS --- 

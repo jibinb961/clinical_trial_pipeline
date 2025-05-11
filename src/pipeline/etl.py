@@ -323,6 +323,8 @@ def transform_clinical_trials(
         conditions_module = protocol_section.get("conditionsModule", {})
         arms_module = protocol_section.get("armsInterventionsModule", {})
         contacts_locations_module = protocol_section.get("contactsLocationsModule", {})
+        eligibility_module = protocol_section.get("eligibilityModule", {})
+        outcomes_module = protocol_section.get("outcomesModule", {})
         
         # Required fields (API contract)
         nct_id = identification_module.get("nctId")
@@ -410,6 +412,37 @@ def transform_clinical_trials(
             study_data["duration_days"] = (end_date_parsed - start_date_parsed).days
         else:
             study_data["duration_days"] = None
+        
+        # --- Age extraction and preprocessing ---
+        def parse_age(age_str):
+            if not age_str or age_str in ("N/A", "None", ""):
+                return None
+            try:
+                parts = age_str.strip().split()
+                value = float(parts[0])
+                unit = parts[1].lower() if len(parts) > 1 else "years"
+                if unit.startswith("year"):
+                    return value
+                elif unit.startswith("month"):
+                    return value / 12
+                elif unit.startswith("week"):
+                    return value / 52.1429
+                elif unit.startswith("day"):
+                    return value / 365.25
+                else:
+                    return value  # fallback
+            except Exception:
+                return None
+        study_data["minimum_age"] = parse_age(eligibility_module.get("minimumAge"))
+        study_data["maximum_age"] = parse_age(eligibility_module.get("maximumAge"))
+        study_data["std_ages"] = eligibility_module.get("stdAges", []) or []
+        # --- Outcome extraction ---
+        def extract_measures(outcomes):
+            if not outcomes or not isinstance(outcomes, list):
+                return []
+            return [o.get("measure", "").strip() for o in outcomes if o.get("measure")]
+        study_data["primary_outcomes"] = extract_measures(outcomes_module.get("primaryOutcomes", []))
+        study_data["secondary_outcomes"] = extract_measures(outcomes_module.get("secondaryOutcomes", []))
         
         # Add pipeline timestamp
         study_data["data_pull_timestamp"] = datetime.now().isoformat()
