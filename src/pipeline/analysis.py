@@ -1149,7 +1149,13 @@ def analyze_trials(
     top_secondary_clusters = get_top_clusters(secondary_cluster_mapping)
     # Pass these to the LLM insights generator
     try:
-        insights = generate_llm_insights(df, top_primary_clusters=top_primary_clusters, top_secondary_clusters=top_secondary_clusters)
+        insights = generate_llm_insights(
+            df,
+            top_primary_clusters=top_primary_clusters,
+            top_secondary_clusters=top_secondary_clusters,
+            primary_outcomes=primary_outcomes,
+            secondary_outcomes=secondary_outcomes
+        )
     except Exception as e:
         logger.error(f"Error generating insights: {e}")
         insights = f"""
@@ -1170,10 +1176,6 @@ def analyze_trials(
 - **List of modalities:** {', '.join(modalities) if modalities else 'N/A'}
 - **Number of biological targets:** {len(targets)}
 - **List of targets:** {', '.join(targets) if targets else 'N/A'}
-- **Number of primary outcome measures:** {len(primary_outcomes)}
-- **List of primary outcome measures:** {', '.join(primary_outcomes) if primary_outcomes else 'N/A'}
-- **Number of secondary outcome measures:** {len(secondary_outcomes)}
-- **List of secondary outcome measures:** {', '.join(secondary_outcomes) if secondary_outcomes else 'N/A'}
 - **Number of sponsors:** {len(sponsors)}
 - **List of sponsors:** {', '.join(sponsors) if sponsors else 'N/A'}
 """
@@ -1483,7 +1485,7 @@ def cluster_and_annotate_outcomes(df, outcome_col, cluster_col, summary_col):
 
 # --- END NEW HELPERS --- 
 
-def generate_llm_insights(df: pd.DataFrame, top_primary_clusters=None, top_secondary_clusters=None) -> str:
+def generate_llm_insights(df: pd.DataFrame, top_primary_clusters=None, top_secondary_clusters=None, primary_outcomes=None, secondary_outcomes=None) -> str:
     """
     Generate a detailed insights report using Gemini LLM, summarizing key statistics, trends, and findings from the clinical trials data.
     Falls back to manual bullet points if LLM call fails.
@@ -1531,7 +1533,7 @@ Clinical Trials Context:
 - End Year: {year_end}
 """
     # --- END NEW ---
-    # --- NEW: Add top outcome clusters to the prompt ---
+    # --- NEW: Add top outcome clusters and outcomes to the prompt ---
     def format_clusters_for_prompt(clusters, label):
         if not clusters:
             return f"No {label} clusters found."
@@ -1541,6 +1543,9 @@ Clinical Trials Context:
         return '\n'.join(lines)
     primary_cluster_section = format_clusters_for_prompt(top_primary_clusters, 'Primary Outcome')
     secondary_cluster_section = format_clusters_for_prompt(top_secondary_clusters, 'Secondary Outcome')
+    # --- NEW: Add outcomes to the prompt ---
+    primary_outcomes_section = f"Top Primary Outcomes (raw):\n- " + "\n- ".join(primary_outcomes) if primary_outcomes else "No primary outcomes found."
+    secondary_outcomes_section = f"Top Secondary Outcomes (raw):\n- " + "\n- ".join(secondary_outcomes) if secondary_outcomes else "No secondary outcomes found."
     # --- END NEW ---
     # Compose a detailed prompt
     prompt = f"""
@@ -1566,7 +1571,11 @@ Number of new trials started per year:
 
 {secondary_cluster_section}
 
-If possible, also:
+{primary_outcomes_section}
+
+{secondary_outcomes_section}
+
+Please generate a section for top primary and secondary outcomes, using the provided lists. If possible, also:
 - Identify any emerging trends or shifts in research focus
 - Comment on the distribution of trial phases and enrollment sizes
 - Note any sponsors with increasing or decreasing activity
