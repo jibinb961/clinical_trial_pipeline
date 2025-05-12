@@ -858,37 +858,6 @@ def create_plots(
     except Exception as e:
         logger.error(f"Error creating age group distribution plot: {e}")
     
-    # Add: Top Primary Outcomes (canonical)
-    try:
-        if 'primary_outcome_canonical' in df.columns:
-            fig_primary_canon = plot_top_canonical_outcomes(df, 'primary_outcome_canonical', 'Top Primary Outcome Measures')
-            if fig_primary_canon:
-                plots['top_primary_outcomes_canonical'] = fig_primary_canon
-                fig_primary_canon.write_html(output_dir / f"top_primary_outcomes_canonical_{timestamp}.html")
-            # Word cloud
-            fig_wc = plot_canonical_outcome_wordcloud(df, 'primary_outcome_canonical', 'Top Primary Outcome Measures')
-            if fig_wc:
-                fig_wc_path = output_dir / f"top_primary_outcomes_canonical_wordcloud_{timestamp}.png"
-                fig_wc.savefig(fig_wc_path, bbox_inches='tight')
-                plt.close(fig_wc)
-    except Exception as e:
-        logger.error(f"Error creating canonical primary outcomes plot: {e}")
-    # Add: Top Secondary Outcomes (canonical)
-    try:
-        if 'secondary_outcome_canonical' in df.columns:
-            fig_secondary_canon = plot_top_canonical_outcomes(df, 'secondary_outcome_canonical', 'Top Secondary Outcome Measures')
-            if fig_secondary_canon:
-                plots['top_secondary_outcomes_canonical'] = fig_secondary_canon
-                fig_secondary_canon.write_html(output_dir / f"top_secondary_outcomes_canonical_{timestamp}.html")
-            # Word cloud
-            fig_wc = plot_canonical_outcome_wordcloud(df, 'secondary_outcome_canonical', 'Top Secondary Outcome Measures')
-            if fig_wc:
-                fig_wc_path = output_dir / f"top_secondary_outcomes_canonical_wordcloud_{timestamp}.png"
-                fig_wc.savefig(fig_wc_path, bbox_inches='tight')
-                plt.close(fig_wc)
-    except Exception as e:
-        logger.error(f"Error creating canonical secondary outcomes plot: {e}")
-    
     logger.info(f"Created {len(plots)} plots")
     return plots
 
@@ -1112,7 +1081,24 @@ def analyze_trials(
             "phase_counts": {}
         }
     
-    # --- NEW: Define variables for summary and plotting ---
+    # --- NEW: Quantitative summary extraction and visualizations ---
+    output_dir = settings.paths.figures
+    if timestamp is None:
+        timestamp = get_timestamp()
+    # Age
+    if 'minimum_age' in df.columns and 'maximum_age' in df.columns:
+        plot_age_quartiles_box(df, output_dir, timestamp)
+    plot_enrollment_quartiles_box(df, output_dir, timestamp)
+    # Outcomes
+    # No LLM-based clustering or canonicalization; just keep the raw outcomes
+    primary_cluster_mapping = None
+    secondary_cluster_mapping = None
+    # --- END NEW ---
+
+    # Restore summary variables for markdown
+    modalities = get_unique_flat_list(df, 'modalities') if 'modalities' in df.columns else []
+    targets = get_unique_flat_list(df, 'targets') if 'targets' in df.columns else []
+    sponsors = get_unique_sponsors(df)
     def _flatten_outcomes(df, col):
         outcomes = set()
         for val in df[col].dropna():
@@ -1129,31 +1115,8 @@ def analyze_trials(
         return sorted(outcomes)
     primary_outcomes = _flatten_outcomes(df, 'primary_outcomes') if 'primary_outcomes' in df.columns else []
     secondary_outcomes = _flatten_outcomes(df, 'secondary_outcomes') if 'secondary_outcomes' in df.columns else []
-    modalities = get_unique_flat_list(df, 'modalities') if 'modalities' in df.columns else []
-    targets = get_unique_flat_list(df, 'targets') if 'targets' in df.columns else []
-    sponsors = get_unique_sponsors(df)
     # --- END NEW ---
-    
-    # --- NEW: Quantitative summary extraction and visualizations ---
-    output_dir = settings.paths.figures
-    if timestamp is None:
-        timestamp = get_timestamp()
-    # Age
-    if 'minimum_age' in df.columns and 'maximum_age' in df.columns:
-        plot_age_quartiles_box(df, output_dir, timestamp)
-    plot_enrollment_quartiles_box(df, output_dir, timestamp)
-    # Outcomes
-    # Cluster and annotate primary outcomes
-    primary_cluster_mapping = None
-    if 'primary_outcomes' in df.columns:
-        df, primary_cluster_mapping = cluster_and_annotate_outcomes(df, 'primary_outcomes', 'primary_outcome_canonical', 'primary_outcome_summary')
-        plot_outcome_clusters(df, 'primary_outcome_canonical', 'Primary Outcome Measures', output_dir, timestamp)
-    # Cluster and annotate secondary outcomes (no plots, just clustering)
-    secondary_cluster_mapping = None
-    if 'secondary_outcomes' in df.columns:
-        df, secondary_cluster_mapping = cluster_and_annotate_outcomes(df, 'secondary_outcomes', 'secondary_outcome_canonical', 'secondary_outcome_summary')
-    # --- END NEW ---
-    
+
     # Create plots - catch any exceptions so the pipeline doesn't fail
     try:
         plots = create_plots(df)
