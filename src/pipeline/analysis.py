@@ -1033,93 +1033,6 @@ def generate_static_matplotlib_plots(
     logger.info("Static plots generated")
 
 
-def generate_llm_insights(df: pd.DataFrame) -> str:
-    """
-    Generate a detailed insights report using Gemini LLM, summarizing key statistics, trends, and findings from the clinical trials data.
-    Falls back to manual bullet points if LLM call fails.
-    """
-    import json
-    from llm_module import generate_pipeline_insights
-    if df.empty:
-        return "No clinical trials data available for insights generation."
-    # Prepare summary statistics
-    stats = generate_summary_statistics(df)
-    # --- NEW: Convert stats to native types for JSON serialization ---
-    def convert_to_native(obj):
-        if isinstance(obj, (np.integer, np.int64)):
-            return int(obj)
-        elif isinstance(obj, (np.floating, np.float64)):
-            return float(obj)
-        elif isinstance(obj, np.ndarray):
-            return obj.tolist()
-        elif isinstance(obj, dict):
-            return {k: convert_to_native(v) for k, v in obj.items()}
-        return obj
-    stats_native = convert_to_native(stats)
-    # --- END NEW ---
-    # Top sponsors
-    top_sponsors = df['lead_sponsor'].value_counts().head(5).to_dict() if 'lead_sponsor' in df.columns else {}
-    # Top modalities
-    modalities = []
-    if 'modalities' in df.columns:
-        modalities = pd.Series([m for sublist in df['modalities'].dropna() for m in (sublist if isinstance(sublist, list) else [sublist])]).value_counts().head(5).to_dict()
-    # Top targets
-    targets = []
-    if 'targets' in df.columns:
-        targets = pd.Series([t for sublist in df['targets'].dropna() for t in (sublist if isinstance(sublist, list) else [sublist])]).value_counts().head(5).to_dict()
-    # Yearly trend
-    yearly_counts = df['start_date'].dropna().apply(get_year_from_date).value_counts().sort_index().to_dict() if 'start_date' in df.columns else {}
-    # --- NEW: Add context from environment variables ---
-    from src.pipeline.config import settings
-    disease = getattr(settings, 'disease', 'N/A')
-    year_start = getattr(settings, 'year_start', 'N/A')
-    year_end = getattr(settings, 'year_end', 'N/A')
-    context_section = f"""
-Clinical Trials Context:
-- Disease: {disease}
-- Start Year: {year_start}
-- End Year: {year_end}
-"""
-    # --- END NEW ---
-    # Compose a detailed prompt
-    prompt = f"""
-{context_section}
-You are an expert biotech analyst. Analyze the following clinical trials data and generate a detailed, insightful report for a hedge fund or investor audience. Highlight trends, sponsor activity, therapeutic focus, and any notable findings.
-
-Key statistics:
-{json.dumps(stats_native, indent=2)}
-
-Top sponsors (by number of trials):
-{json.dumps(top_sponsors, indent=2)}
-
-Top modalities (by number of trials):
-{json.dumps(modalities, indent=2)}
-
-Top targets (by number of trials):
-{json.dumps(targets, indent=2)}
-
-Number of new trials started per year:
-{json.dumps(yearly_counts, indent=2)}
-
-If possible, also:
-- Identify any emerging trends or shifts in research focus
-- Comment on the distribution of trial phases and enrollment sizes
-- Note any sponsors with increasing or decreasing activity
-- Suggest potential strategic priorities or risks
-
-Format your response in markdown with clear sections and bullet points where appropriate.
-"""
-
-    try:
-        llm_report = generate_pipeline_insights(prompt)
-        if llm_report and isinstance(llm_report, str):
-            return llm_report
-        else:
-            return "[LLM did not return a valid report. Please check the LLM integration.]"
-    except Exception as e:
-        return f"[LLM insights generation failed: {str(e)}]"
-
-
 @log_execution_time
 def analyze_trials(
     df: pd.DataFrame, timestamp: Optional[str] = None
@@ -1200,10 +1113,24 @@ def analyze_trials(
         }
     
     # --- NEW: Define variables for summary and plotting ---
+    def _flatten_outcomes(df, col):
+        outcomes = set()
+        for val in df[col].dropna():
+            if isinstance(val, list):
+                for o in val:
+                    if isinstance(o, dict) and o.get('measure'):
+                        outcomes.add(o['measure'])
+                    elif isinstance(o, str):
+                        outcomes.add(o)
+            elif isinstance(val, dict) and val.get('measure'):
+                outcomes.add(val['measure'])
+            elif isinstance(val, str):
+                outcomes.add(val)
+        return sorted(outcomes)
+    primary_outcomes = _flatten_outcomes(df, 'primary_outcomes') if 'primary_outcomes' in df.columns else []
+    secondary_outcomes = _flatten_outcomes(df, 'secondary_outcomes') if 'secondary_outcomes' in df.columns else []
     modalities = get_unique_flat_list(df, 'modalities') if 'modalities' in df.columns else []
     targets = get_unique_flat_list(df, 'targets') if 'targets' in df.columns else []
-    primary_outcomes = flatten_outcome_measures(df, 'primary_outcomes') if 'primary_outcomes' in df.columns else []
-    secondary_outcomes = flatten_outcome_measures(df, 'secondary_outcomes') if 'secondary_outcomes' in df.columns else []
     sponsors = get_unique_sponsors(df)
     # --- END NEW ---
     
@@ -1212,16 +1139,19 @@ def analyze_trials(
     if timestamp is None:
         timestamp = get_timestamp()
     # Age
-    if 'minimum_age' in df.columns:
-        plot_age_hist_box(df, 'minimum_age', output_dir, timestamp)
-    if 'maximum_age' in df.columns:
-        plot_age_hist_box(df, 'maximum_age', output_dir, timestamp)
-    plot_std_age_bar(df, output_dir, timestamp)
-    # Enrollment
-    plot_enrollment_hist(df, output_dir, timestamp)
+    if 'minimum_age' in df.columns and 'maximum_age' in df.columns:
+        plot_age_quartiles_box(df, output_dir, timestamp)
+    plot_enrollment_quartiles_box(df, output_dir, timestamp)
     # Outcomes
-    plot_outcome_wordcloud_and_bar(primary_outcomes, 'Primary Outcome Measures', output_dir, timestamp)
-    plot_outcome_wordcloud_and_bar(secondary_outcomes, 'Secondary Outcome Measures', output_dir, timestamp)
+    # Cluster and annotate primary outcomes
+    primary_cluster_mapping = None
+    if 'primary_outcomes' in df.columns:
+        df, primary_cluster_mapping = cluster_and_annotate_outcomes(df, 'primary_outcomes', 'primary_outcome_canonical', 'primary_outcome_summary')
+        plot_outcome_clusters(df, 'primary_outcome_canonical', 'Primary Outcome Measures', output_dir, timestamp)
+    # Cluster and annotate secondary outcomes (no plots, just clustering)
+    secondary_cluster_mapping = None
+    if 'secondary_outcomes' in df.columns:
+        df, secondary_cluster_mapping = cluster_and_annotate_outcomes(df, 'secondary_outcomes', 'secondary_outcome_canonical', 'secondary_outcome_summary')
     # --- END NEW ---
     
     # Create plots - catch any exceptions so the pipeline doesn't fail
@@ -1237,9 +1167,26 @@ def analyze_trials(
     except Exception as e:
         logger.error(f"Error generating static plots: {e}")
     
-    # Generate insights - catch any exceptions
+    # --- NEW: Compose LLM insights section, passing top outcome clusters ---
+    def get_top_clusters(cluster_mapping, top_n=5):
+        if not cluster_mapping:
+            return []
+        # Count cluster label frequencies
+        from collections import Counter
+        labels = [v['canonical'] for v in cluster_mapping.values() if v.get('canonical')]
+        counts = Counter(labels)
+        top = counts.most_common(top_n)
+        # For each top cluster, get example outcomes
+        result = []
+        for label, count in top:
+            examples = [k for k, v in cluster_mapping.items() if v.get('canonical') == label][:3]
+            result.append({'label': label, 'count': count, 'examples': examples})
+        return result
+    top_primary_clusters = get_top_clusters(primary_cluster_mapping)
+    top_secondary_clusters = get_top_clusters(secondary_cluster_mapping)
+    # Pass these to the LLM insights generator
     try:
-        insights = generate_llm_insights(df)
+        insights = generate_llm_insights(df, top_primary_clusters=top_primary_clusters, top_secondary_clusters=top_secondary_clusters)
     except Exception as e:
         logger.error(f"Error generating insights: {e}")
         insights = f"""
@@ -1250,7 +1197,8 @@ def analyze_trials(
         
         Error: {str(e)}
         """
-    
+    # --- END NEW ---
+
     # --- NEW: Compose quantitative summary markdown ---
     quantitative_md = f"""
 ## Quantitative Summary (Manual)
@@ -1300,16 +1248,8 @@ def analyze_trials(
                 quantitative_md += f"    - {group}: {count} studies\n"
     # --- END NEW ---
 
-    # --- NEW: Compose LLM insights section ---
-    llm_section = "\n## LLM-Generated Insights\n"
-    if insights.startswith("[LLM insights generation failed") or insights.startswith("[LLM did not return"):
-        llm_section += f"\n**LLM insights could not be generated.**\n\n{insights}\n"
-    else:
-        llm_section += insights
-    # --- END NEW ---
-
     # Compose final insights (manual and LLM sections)
-    final_insights = quantitative_md + "\n" + llm_section
+    final_insights = quantitative_md + "\n" + insights
     # Create directories if they don't exist
     settings.paths.processed_data.mkdir(parents=True, exist_ok=True)
     # Save insights to file
@@ -1477,104 +1417,201 @@ def get_unique_sponsors(df):
                 sponsors.add(val)
     return sorted(sponsors)
 
-def plot_age_hist_box(df, col, output_dir, timestamp):
-    vals = pd.to_numeric(df[col], errors='coerce').dropna()
-    if vals.empty:
+def plot_age_quartiles_box(df, output_dir, timestamp):
+    """
+    Create a single boxplot for minimum and maximum age (in years) and save as PNG.
+    """
+    import matplotlib.pyplot as plt
+    age_df = df[['minimum_age', 'maximum_age']].copy()
+    melted = age_df.melt(var_name='Age Type', value_name='Age (years)')
+    melted = melted.dropna(subset=['Age (years)'])
+    if melted.empty:
         return
-    plt.figure(figsize=(8, 4))
-    plt.hist(vals, bins=20, color='skyblue', edgecolor='black')
-    plt.title(f"{col.replace('_', ' ').title()} Distribution (Histogram)")
-    plt.xlabel("Age (years)")
-    plt.ylabel("Count")
+    plt.figure(figsize=(7, 5))
+    melted.boxplot(by='Age Type', column='Age (years)', grid=False)
+    plt.title('Age Distribution by Type (Boxplot)')
+    plt.suptitle("")
+    plt.xlabel("Age Type")
+    plt.ylabel("Age (years)")
     plt.tight_layout()
-    plt.savefig(output_dir / f"{col}_hist_{timestamp}.png", dpi=300)
-    plt.close()
-    plt.figure(figsize=(6, 4))
-    plt.boxplot(vals, vert=False)
-    plt.title(f"{col.replace('_', ' ').title()} Distribution (Boxplot)")
-    plt.xlabel("Age (years)")
-    plt.tight_layout()
-    plt.savefig(output_dir / f"{col}_box_{timestamp}.png", dpi=300)
-    plt.close()
-
-def plot_std_age_bar(df, output_dir, timestamp):
-    if 'age_groups' not in df.columns:
-        return
-    exploded = df.explode('age_groups')
-    group_counts = exploded['age_groups'].value_counts()
-    if group_counts.empty:
-        return
-    plt.figure(figsize=(7, 4))
-    group_counts.plot(kind='bar', color='orchid')
-    plt.title("Standard Age Group Distribution")
-    plt.xlabel("Age Group")
-    plt.ylabel("Number of Trials")
-    plt.tight_layout()
-    plt.savefig(output_dir / f"std_age_group_bar_{timestamp}.png", dpi=300)
+    plt.savefig(output_dir / f"age_quartiles_box_{timestamp}.png", dpi=300)
     plt.close()
 
-def plot_enrollment_hist(df, output_dir, timestamp):
+def plot_enrollment_quartiles_box(df, output_dir, timestamp):
+    """
+    Create a single boxplot for enrollment count and save as PNG.
+    """
+    import matplotlib.pyplot as plt
     col = 'enrollment_count' if 'enrollment_count' in df.columns else 'enrollment'
     if col not in df.columns:
         return
     vals = pd.to_numeric(df[col], errors='coerce').dropna()
     if vals.empty:
         return
-    plt.figure(figsize=(8, 4))
-    plt.hist(vals, bins=20, color='lightgreen', edgecolor='black')
-    plt.title("Enrollment Distribution (Histogram)")
-    plt.xlabel("Enrollment Count")
-    plt.ylabel("Count")
+    plt.figure(figsize=(7, 5))
+    plt.boxplot(vals, vert=False)
+    plt.title('Enrollment Distribution (Boxplot)')
+    plt.xlabel('Enrollment Count')
     plt.tight_layout()
-    plt.savefig(output_dir / f"enrollment_hist_{timestamp}.png", dpi=300)
+    plt.savefig(output_dir / f"enrollment_quartiles_box_{timestamp}.png", dpi=300)
     plt.close()
 
-def flatten_outcome_measures(df, col):
-    # Flattens and cleans outcome measures (list of dicts or strings)
-    outcomes = []
-    for val in df[col].dropna():
-        if isinstance(val, list):
-            for o in val:
-                if isinstance(o, dict):
-                    if o.get('measure'):
-                        outcomes.append(o['measure'])
-                elif isinstance(o, str):
-                    outcomes.append(o)
-        elif isinstance(val, dict):
-            if val.get('measure'):
-                outcomes.append(val['measure'])
-        elif isinstance(val, str):
-            outcomes.append(val)
-    return outcomes
-
-def plot_outcome_wordcloud_and_bar(outcomes, title, output_dir, timestamp, top_n=20):
+def plot_outcome_clusters(df, cluster_col, title, output_dir, timestamp, top_n=10):
+    """
+    Bar plot of top N clusters (by count) and table of representative outcomes.
+    """
     from collections import Counter
-    if not outcomes:
+    # Flatten and count clusters
+    all_clusters = [item for sublist in df[cluster_col].dropna() for item in (sublist if isinstance(sublist, list) else [sublist])]
+    all_clusters = [x for x in all_clusters if x]
+    if not all_clusters:
         return
-    # Bar chart
-    counts = Counter(outcomes)
-    top = counts.most_common(top_n)
-    labels, values = zip(*top)
+    cluster_counts = Counter(all_clusters).most_common(top_n)
+    labels, values = zip(*cluster_counts)
+    # Bar plot
     plt.figure(figsize=(10, 6))
-    plt.barh(labels[::-1], values[::-1], color='cornflowerblue')
-    plt.title(f"Top {top_n} {title}")
+    plt.barh(labels[::-1], values[::-1], color='teal')
+    plt.title(f"Top {top_n} {title} Clusters")
     plt.xlabel("Count")
     plt.tight_layout()
-    plt.savefig(output_dir / f"top_{title.replace(' ', '_').lower()}_bar_{timestamp}.png", dpi=300)
+    plt.savefig(output_dir / f"top_{title.replace(' ', '_').lower()}_clusters_bar_{timestamp}.png", dpi=300)
     plt.close()
-    # Word cloud
-    try:
-        from wordcloud import WordCloud
-        text = " ".join(outcomes)
-        wc = WordCloud(width=800, height=400, background_color='white').generate(text)
-        plt.figure(figsize=(10, 5))
-        plt.imshow(wc, interpolation='bilinear')
-        plt.axis('off')
-        plt.title(f"{title} (Word Cloud)")
-        plt.tight_layout()
-        plt.savefig(output_dir / f"{title.replace(' ', '_').lower()}_wordcloud_{timestamp}.png", bbox_inches='tight')
-        plt.close()
-    except ImportError:
-        pass
+    # Table: show top clusters and example outcomes
+    table_path = output_dir / f"top_{title.replace(' ', '_').lower()}_clusters_table_{timestamp}.csv"
+    import csv
+    with open(table_path, 'w', newline='') as csvfile:
+        writer = csv.writer(csvfile)
+        writer.writerow(["Cluster Label", "Count", "Example Outcomes"])
+        for label, count in cluster_counts:
+            # Get up to 3 example outcomes for this cluster
+            examples = []
+            for idx, row in df.iterrows():
+                if label in (row[cluster_col] if isinstance(row[cluster_col], list) else [row[cluster_col]]):
+                    # Find the original outcome(s) for this row
+                    origs = row.get('primary_outcomes', []) if 'primary' in cluster_col else row.get('secondary_outcomes', [])
+                    if isinstance(origs, list):
+                        examples.extend(origs)
+                    elif isinstance(origs, str):
+                        examples.append(origs)
+                if len(examples) >= 3:
+                    break
+            writer.writerow([label, count, "; ".join(examples[:3])])
+
+# --- NEW: LLM-based clustering for outcome measures ---
+def cluster_and_annotate_outcomes(df, outcome_col, cluster_col, summary_col):
+    """
+    Use LLM to cluster outcome sentences and annotate the DataFrame with cluster labels and summaries.
+    """
+    from src.pipeline.gemini_utils import cluster_outcomes_with_gemini
+    # Extract all unique outcomes (with measure, description, timeframe)
+    unique_outcomes = extract_outcomes_for_clustering(df, outcome_col)
+    if not unique_outcomes:
+        return df, {}
+    # Call LLM to cluster outcomes
+    cluster_mapping = cluster_outcomes_with_gemini(unique_outcomes, outcome_type=outcome_col)
+    # Map canonical label and summary to each outcome in the DataFrame
+    df = map_canonical_outcomes(df, outcome_col, cluster_mapping, cluster_col, summary_col)
+    return df, cluster_mapping
 
 # --- END NEW HELPERS --- 
+
+def generate_llm_insights(df: pd.DataFrame, top_primary_clusters=None, top_secondary_clusters=None) -> str:
+    """
+    Generate a detailed insights report using Gemini LLM, summarizing key statistics, trends, and findings from the clinical trials data.
+    Falls back to manual bullet points if LLM call fails.
+    """
+    import json
+    from llm_module import generate_pipeline_insights
+    if df.empty:
+        return "No clinical trials data available for insights generation."
+    # Prepare summary statistics
+    stats = generate_summary_statistics(df)
+    # --- NEW: Convert stats to native types for JSON serialization ---
+    def convert_to_native(obj):
+        if isinstance(obj, (np.integer, np.int64)):
+            return int(obj)
+        elif isinstance(obj, (np.floating, np.float64)):
+            return float(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        elif isinstance(obj, dict):
+            return {k: convert_to_native(v) for k, v in obj.items()}
+        return obj
+    stats_native = convert_to_native(stats)
+    # --- END NEW ---
+    # Top sponsors
+    top_sponsors = df['lead_sponsor'].value_counts().head(5).to_dict() if 'lead_sponsor' in df.columns else {}
+    # Top modalities
+    modalities = []
+    if 'modalities' in df.columns:
+        modalities = pd.Series([m for sublist in df['modalities'].dropna() for m in (sublist if isinstance(sublist, list) else [sublist])]).value_counts().head(5).to_dict()
+    # Top targets
+    targets = []
+    if 'targets' in df.columns:
+        targets = pd.Series([t for sublist in df['targets'].dropna() for t in (sublist if isinstance(sublist, list) else [sublist])]).value_counts().head(5).to_dict()
+    # Yearly trend
+    yearly_counts = df['start_date'].dropna().apply(get_year_from_date).value_counts().sort_index().to_dict() if 'start_date' in df.columns else {}
+    # --- NEW: Add context from environment variables ---
+    from src.pipeline.config import settings
+    disease = getattr(settings, 'disease', 'N/A')
+    year_start = getattr(settings, 'year_start', 'N/A')
+    year_end = getattr(settings, 'year_end', 'N/A')
+    context_section = f"""
+Clinical Trials Context:
+- Disease: {disease}
+- Start Year: {year_start}
+- End Year: {year_end}
+"""
+    # --- END NEW ---
+    # --- NEW: Add top outcome clusters to the prompt ---
+    def format_clusters_for_prompt(clusters, label):
+        if not clusters:
+            return f"No {label} clusters found."
+        lines = [f"Top {label} Clusters:"]
+        for c in clusters:
+            lines.append(f"- {c['label']} (n={c['count']}): e.g. {', '.join(c['examples'])}")
+        return '\n'.join(lines)
+    primary_cluster_section = format_clusters_for_prompt(top_primary_clusters, 'Primary Outcome')
+    secondary_cluster_section = format_clusters_for_prompt(top_secondary_clusters, 'Secondary Outcome')
+    # --- END NEW ---
+    # Compose a detailed prompt
+    prompt = f"""
+{context_section}
+You are an expert biotech analyst. Analyze the following clinical trials data and generate a detailed, insightful report for a hedge fund or investor audience. Highlight trends, sponsor activity, therapeutic focus, and any notable findings.
+
+Key statistics:
+{json.dumps(stats_native, indent=2)}
+
+Top sponsors (by number of trials):
+{json.dumps(top_sponsors, indent=2)}
+
+Top modalities (by number of trials):
+{json.dumps(modalities, indent=2)}
+
+Top targets (by number of trials):
+{json.dumps(targets, indent=2)}
+
+Number of new trials started per year:
+{json.dumps(yearly_counts, indent=2)}
+
+{primary_cluster_section}
+
+{secondary_cluster_section}
+
+If possible, also:
+- Identify any emerging trends or shifts in research focus
+- Comment on the distribution of trial phases and enrollment sizes
+- Note any sponsors with increasing or decreasing activity
+- Suggest potential strategic priorities or risks
+
+Format your response in markdown with clear sections and bullet points where appropriate.
+"""
+
+    try:
+        llm_report = generate_pipeline_insights(prompt)
+        if llm_report and isinstance(llm_report, str):
+            return llm_report
+        else:
+            return "[LLM did not return a valid report. Please check the LLM integration.]"
+    except Exception as e:
+        return f"[LLM insights generation failed: {str(e)}]" 
