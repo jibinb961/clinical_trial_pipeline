@@ -57,9 +57,8 @@ def get_cached_drug(drug_name: str) -> Optional[Dict[str, str]]:
     Returns:
         Dictionary with modality and target, or None if not in cache
     """
-    # STEP 2: Check if drug is in cache
     engine = create_engine(f"sqlite:///{settings.cache_db_path}")
-    
+    logger.info(f"[CACHE] Lookup for drug: '{drug_name}' in cache DB: {settings.cache_db_path}")
     with Session(engine) as session:
         result = session.execute(
             select(DrugCache).where(DrugCache.name == drug_name)
@@ -67,7 +66,7 @@ def get_cached_drug(drug_name: str) -> Optional[Dict[str, str]]:
         
         if result:
             drug = result[0]
-            logger.debug(f"Found cached drug: {drug_name} from {drug.source}")
+            logger.info(f"[CACHE] HIT: '{drug_name}' found in cache (source: {drug.source})")
             return {
                 "name": drug.name,
                 "modality": drug.modality,
@@ -75,6 +74,7 @@ def get_cached_drug(drug_name: str) -> Optional[Dict[str, str]]:
                 "source": drug.source,
             }
     
+    logger.info(f"[CACHE] MISS: '{drug_name}' not found in cache")
     return None
 
 
@@ -89,9 +89,8 @@ def cache_drug(
         target: Drug target
         source: Source of the information
     """
-    # STEP 3: Save drug info to cache
     engine = create_engine(f"sqlite:///{settings.cache_db_path}")
-    
+    logger.info(f"[CACHE] WRITE: '{drug_name}' -> modality: '{modality}', target: '{target}', source: '{source}' in cache DB: {settings.cache_db_path}")
     with Session(engine) as session:
         drug = DrugCache(
             name=drug_name,
@@ -242,11 +241,13 @@ def preprocess_drug_name(drug_name):
     # Remove annotations like (Background Drug), (oral), etc.
     name = re.sub(r'\([^)]*\)', '', name)
     name = re.sub(r'\s+', ' ', name).strip()
-    # Split combinations
+    # Split combinations on '+', ' and ', or '/'
     if '+' in name:
         parts = [n.strip() for n in name.split('+')]
     elif ' and ' in name:
         parts = [n.strip() for n in name.split(' and ')]
+    elif '/' in name:
+        parts = [n.strip() for n in name.split('/')]
     else:
         parts = [name]
     return parts, [drug_name]*len(parts), [name]*len(parts), ['']*len(parts)
@@ -259,14 +260,17 @@ async def batch_query_gemini(drug_names):
     if not initialize_gemini():
         return {name: {"modality": "Unknown", "target": "Unknown", "source": "Gemini"} for name in drug_names}
     prompt = f"""
-You are a pharmacology and drug development expert. For each drug name below, provide its modality and target. 
+You are a pharmacology and drug development expert. For each drug name below, provide its modality and target.
 
 **Instructions:**
+- Ignore dosage, formulation, and administration route information (e.g., mg, BID, capsules, tablets, oral, injection, etc.) and focus on the core drug name.
+- For drug names with slashes ("/"), plus signs ("+"), or "and", treat these as combinations and return a list of modalities and a list of targets for each component, in the same order as the drugs in the name.
+- If a drug is an internal code or investigational compound, attempt to infer its modality and target from any available public information or typical drug class. Only return 'Unknown' if absolutely no information is available.
+- For persistent unknowns, suggest a likely class or mechanism if possible, even if generic (e.g., 'investigational small-molecule', 'unknown target').
 - For each drug, return a JSON object with:
     - "name": the drug name
     - "modality": the type (e.g., small-molecule, monoclonal antibody, siRNA, peptide, gene therapy, cell therapy, vaccine, placebo, device, procedure, other)
     - "target": Prefer gene symbols, protein names, or well-known pathway names. If only a generic target is known (e.g., 'dopamine receptor', 'immune system', 'bacterial cell wall'), use that rather than 'Unknown'.
-- For combinations (e.g., "DrugA + DrugB"), return a list of modalities and a list of targets in the same order as the drugs in the name.
 - For placebos, always return 'placebo' for both modality and target.
 - If the drug is a device, procedure, or not a drug, return 'device', 'procedure', or 'other' as the modality and a generic target if possible.
 - Only return 'Unknown' if there is truly no information available after considering all generic/functional targets.
@@ -298,54 +302,90 @@ Drugs:
 # --- New: Main enrichment function ---
 @log_execution_time
 async def enrich_drugs(drug_names: Set[str]) -> Dict[str, Dict[str, Any]]:
+    logger.info(f"[CACHE] Using cache DB at: {settings.cache_db_path}")
     setup_drug_cache_db()
     logger.info(f"Enriching {len(drug_names)} drugs with ChEMBL, then Gemini batch fallback")
-    # Stage 1: Preprocess and ChEMBL
     chembl_results = {}
     unresolved = set()
     placebo_set = set()
+    combo_map = {}
     for orig_name in tqdm(drug_names, desc="Preprocessing and ChEMBL lookup"):
         parts, origs, normed, _ = preprocess_drug_name(orig_name)
-        for part, orig, norm, _ in zip(parts, origs, normed, _):
+        if len(parts) > 1:
+            combo_map[orig_name] = parts
+        modalities, targets, sources = [], [], []
+        for part in parts:
             # Placebo strict handling
             if 'placebo' in part.lower() or 'simulant' in part.lower():
-                chembl_results[orig] = {"modality": "placebo", "target": "placebo", "source": "placebo"}
-                cache_drug(orig, "placebo", "placebo", "placebo")
-                placebo_set.add(orig)
+                modalities.append('placebo')
+                targets.append('placebo')
+                sources.append('placebo')
+                cache_drug(part, 'placebo', 'placebo', 'placebo')
+                placebo_set.add(part)
             else:
                 cached = get_cached_drug(part)
                 if cached and cached['modality'] != 'Unknown' and cached['target'] != 'Unknown':
-                    chembl_results[orig] = {"modality": cached['modality'], "target": cached['target'], "source": cached['source']}
+                    modalities.append(cached['modality'])
+                    targets.append(cached['target'])
+                    sources.append(cached['source'])
                 else:
                     info = query_chembl_client(part)
                     if info and info['modality'] != 'Unknown' and info['target'] != 'Unknown':
-                        chembl_results[orig] = {"modality": info['modality'], "target": info['target'], "source": "ChEMBL"}
-                        cache_drug(part, info['modality'], info['target'], "ChEMBL")
+                        modalities.append(info['modality'])
+                        targets.append(info['target'])
+                        sources.append('ChEMBL')
+                        cache_drug(part, info['modality'], info['target'], 'ChEMBL')
                     else:
+                        modalities.append('Unknown')
+                        targets.append('Unknown')
+                        sources.append('Unknown')
                         unresolved.add(part)
+        # Store as list for combos, single value for single drugs
+        if len(parts) > 1:
+            chembl_results[orig_name] = {"modality": modalities, "target": targets, "source": sources}
+        else:
+            chembl_results[orig_name] = {"modality": modalities[0], "target": targets[0], "source": sources[0]}
     # Stage 2: Gemini batch (skip placebos)
     unresolved_for_gemini = [name for name in unresolved if 'placebo' not in name.lower() and 'simulant' not in name.lower()]
     gemini_results = await batch_query_gemini(unresolved_for_gemini)
     for name, info in gemini_results.items():
         # Always set source to Gemini, even if Unknown
         info['source'] = 'Gemini'
-        cache_drug(name, info['modality'], info['target'], "Gemini")
+        cache_drug(name, info['modality'], info['target'], 'Gemini')
     # Merge Gemini results into chembl_results
     for orig_name in drug_names:
-        # Placebo strict handling
+        parts, _, _, _ = preprocess_drug_name(orig_name)
         if 'placebo' in orig_name.lower() or 'simulant' in orig_name.lower():
             chembl_results[orig_name] = {"modality": "placebo", "target": "placebo", "source": "placebo"}
+        elif len(parts) > 1:
+            # For combos, update unresolved parts with Gemini results
+            modalities, targets, sources = [], [], []
+            for part in parts:
+                if part in gemini_results:
+                    modalities.append(gemini_results[part]['modality'])
+                    targets.append(gemini_results[part]['target'])
+                    sources.append('Gemini')
+                else:
+                    entry = chembl_results.get(orig_name, {"modality": "Unknown", "target": "Unknown", "source": "Unknown"})
+                    if isinstance(entry['modality'], list):
+                        idx = parts.index(part)
+                        modalities.append(entry['modality'][idx])
+                        targets.append(entry['target'][idx])
+                        sources.append(entry['source'][idx])
+                    else:
+                        modalities.append(entry['modality'])
+                        targets.append(entry['target'])
+                        sources.append(entry['source'])
+            chembl_results[orig_name] = {"modality": modalities, "target": targets, "source": sources}
         elif orig_name in gemini_results:
             chembl_results[orig_name] = gemini_results[orig_name]
         elif orig_name in chembl_results:
-            # If still unresolved after ChEMBL, set source to Gemini if Gemini was attempted
             if (chembl_results[orig_name]['modality'] == 'Unknown' or chembl_results[orig_name]['target'] == 'Unknown'):
                 if orig_name in unresolved_for_gemini:
                     chembl_results[orig_name]['source'] = 'Gemini'
                 elif chembl_results[orig_name]['source'] == 'Unknown':
                     chembl_results[orig_name]['source'] = 'ChEMBL'
         else:
-            # If not found anywhere, mark as Gemini/Unknown
             chembl_results[orig_name] = {"modality": "Unknown", "target": "Unknown", "source": "Gemini"}
     logger.info(f"Completed enrichment of {len(chembl_results)} drugs")
     return chembl_results
@@ -366,9 +406,19 @@ def apply_enrichment_to_trials(trials_df: pd.DataFrame, drug_info: Dict[str, Dic
         modalities, targets, sources = [], [], []
         for drug in interventions:
             info = drug_info.get(drug, {"modality": "Unknown", "target": "Unknown", "source": "Unknown"})
-            modalities.append(info.get("modality", "Unknown"))
-            targets.append(info.get("target", "Unknown"))
-            sources.append(info.get("source", "Unknown"))
+            mod = info.get("modality", "Unknown")
+            tar = info.get("target", "Unknown")
+            src = info.get("source", "Unknown")
+            # Always wrap in list if not already a list
+            if not isinstance(mod, list):
+                mod = [mod]
+            if not isinstance(tar, list):
+                tar = [tar]
+            if not isinstance(src, list):
+                src = [src]
+            modalities.append(mod)
+            targets.append(tar)
+            sources.append(src)
         return modalities, targets, sources
     for i, row in enriched_df.iterrows():
         interventions = row.get("intervention_names")
@@ -377,6 +427,20 @@ def apply_enrichment_to_trials(trials_df: pd.DataFrame, drug_info: Dict[str, Dic
             enriched_df.at[i, "modalities"] = modalities
             enriched_df.at[i, "targets"] = targets
             enriched_df.at[i, "enrichment_sources"] = sources
+    # Flatten list-of-lists in modalities, targets, enrichment_sources
+    def flatten_list_of_lists(lst):
+        if not isinstance(lst, list):
+            return [lst]
+        flat = []
+        for item in lst:
+            if isinstance(item, list):
+                flat.extend(item)
+            else:
+                flat.append(item)
+        return flat
+    for col in ["modalities", "targets", "enrichment_sources"]:
+        if col in enriched_df.columns:
+            enriched_df[col] = enriched_df[col].apply(flatten_list_of_lists)
     timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
     output_path = settings.paths.processed_data / f"trials_enriched_{timestamp}.parquet"
     enriched_df.to_parquet(output_path, index=False)

@@ -1344,12 +1344,17 @@ def plot_canonical_outcome_wordcloud(df: pd.DataFrame, canonical_col: str, title
 
 # --- NEW: Helper functions for extracting unique lists and quartiles ---
 def get_unique_flat_list(df, col):
-    """Extract a flat set of unique items from a column of lists."""
+    """Extract a flat set of unique items from a column of lists or lists of lists."""
     items = set()
     for val in df[col].dropna():
         if isinstance(val, list):
-            items.update(val)
-        elif isinstance(val, str):
+            for v in val:
+                if isinstance(v, list):
+                    for vv in v:
+                        items.add(vv)
+                else:
+                    items.add(v)
+        else:
             items.add(val)
     return sorted(items)
 
