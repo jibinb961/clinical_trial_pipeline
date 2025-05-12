@@ -64,8 +64,10 @@ def generate_summary_statistics(
     
     # Make sure required columns exist to prevent KeyError
     if 'overall_status' in df.columns:
-        stats["completed_trials"] = df[df["overall_status"] == "Completed"].shape[0]
-        stats["ongoing_trials"] = df[df["overall_status"].isin(["Recruiting", "Active, not recruiting"])].shape[0]
+        status_col = df['overall_status'].astype(str).str.strip().str.lower()
+        logger.info(f"Unique overall_status values: {status_col.unique()}")
+        stats["completed_trials"] = (status_col == "completed").sum()
+        stats["ongoing_trials"] = status_col.isin(["recruiting", "active, not recruiting"]).sum()
     else:
         logger.warning("Column 'overall_status' not found in DataFrame. Using zeros for status counts.")
         stats["completed_trials"] = 0
@@ -1038,12 +1040,23 @@ def generate_llm_insights(df: pd.DataFrame) -> str:
     """
     import json
     from llm_module import generate_pipeline_insights
-
     if df.empty:
         return "No clinical trials data available for insights generation."
-
     # Prepare summary statistics
     stats = generate_summary_statistics(df)
+    # --- NEW: Convert stats to native types for JSON serialization ---
+    def convert_to_native(obj):
+        if isinstance(obj, (np.integer, np.int64)):
+            return int(obj)
+        elif isinstance(obj, (np.floating, np.float64)):
+            return float(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        elif isinstance(obj, dict):
+            return {k: convert_to_native(v) for k, v in obj.items()}
+        return obj
+    stats_native = convert_to_native(stats)
+    # --- END NEW ---
     # Top sponsors
     top_sponsors = df['lead_sponsor'].value_counts().head(5).to_dict() if 'lead_sponsor' in df.columns else {}
     # Top modalities
@@ -1056,13 +1069,12 @@ def generate_llm_insights(df: pd.DataFrame) -> str:
         targets = pd.Series([t for sublist in df['targets'].dropna() for t in (sublist if isinstance(sublist, list) else [sublist])]).value_counts().head(5).to_dict()
     # Yearly trend
     yearly_counts = df['start_date'].dropna().apply(get_year_from_date).value_counts().sort_index().to_dict() if 'start_date' in df.columns else {}
-
     # Compose a detailed prompt
     prompt = f"""
 You are an expert biotech analyst. Analyze the following clinical trials data and generate a detailed, insightful report for a hedge fund or investor audience. Highlight trends, sponsor activity, therapeutic focus, and any notable findings.
 
 Key statistics:
-{json.dumps(stats, indent=2)}
+{json.dumps(stats_native, indent=2)}
 
 Top sponsors (by number of trials):
 {json.dumps(top_sponsors, indent=2)}
@@ -1228,7 +1240,7 @@ def analyze_trials(
     
     # --- NEW: Compose quantitative summary markdown ---
     quantitative_md = f"""
-## Quantitative Summary
+## Quantitative Summary (Manual)
 
 - **Number of explored modalities:** {len(modalities)}
 - **List of modalities:** {', '.join(modalities) if modalities else 'N/A'}
@@ -1274,8 +1286,17 @@ def analyze_trials(
             for group, count in group_counts.items():
                 quantitative_md += f"    - {group}: {count} studies\n"
     # --- END NEW ---
-    # Compose final insights (prepend quantitative summary)
-    final_insights = quantitative_md + "\n" + insights
+
+    # --- NEW: Compose LLM insights section ---
+    llm_section = "\n## LLM-Generated Insights\n"
+    if insights.startswith("[LLM insights generation failed") or insights.startswith("[LLM did not return"):
+        llm_section += f"\n**LLM insights could not be generated.**\n\n{insights}\n"
+    else:
+        llm_section += insights
+    # --- END NEW ---
+
+    # Compose final insights (manual and LLM sections)
+    final_insights = quantitative_md + "\n" + llm_section
     # Create directories if they don't exist
     settings.paths.processed_data.mkdir(parents=True, exist_ok=True)
     # Save insights to file
@@ -1403,7 +1424,7 @@ def plot_canonical_outcome_wordcloud(df: pd.DataFrame, canonical_col: str, title
     ax.imshow(wc, interpolation='bilinear')
     ax.axis('off')
     ax.set_title(title + " (Word Cloud)")
-    return fig 
+    return fig
 
 # --- NEW: Helper functions for extracting unique lists and quartiles ---
 def get_unique_flat_list(df, col):
