@@ -1069,8 +1069,21 @@ def generate_llm_insights(df: pd.DataFrame) -> str:
         targets = pd.Series([t for sublist in df['targets'].dropna() for t in (sublist if isinstance(sublist, list) else [sublist])]).value_counts().head(5).to_dict()
     # Yearly trend
     yearly_counts = df['start_date'].dropna().apply(get_year_from_date).value_counts().sort_index().to_dict() if 'start_date' in df.columns else {}
+    # --- NEW: Add context from environment variables ---
+    from src.pipeline.config import settings
+    disease = getattr(settings, 'disease', 'N/A')
+    year_start = getattr(settings, 'year_start', 'N/A')
+    year_end = getattr(settings, 'year_end', 'N/A')
+    context_section = f"""
+Clinical Trials Context:
+- Disease: {disease}
+- Start Year: {year_start}
+- End Year: {year_end}
+"""
+    # --- END NEW ---
     # Compose a detailed prompt
     prompt = f"""
+{context_section}
 You are an expert biotech analyst. Analyze the following clinical trials data and generate a detailed, insightful report for a hedge fund or investor audience. Highlight trends, sponsor activity, therapeutic focus, and any notable findings.
 
 Key statistics:
