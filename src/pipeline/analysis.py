@@ -23,7 +23,7 @@ from collections import Counter
 
 from src.pipeline.config import settings
 from src.pipeline.utils import get_timestamp, log_execution_time, logger
-from src.pipeline.gemini_utils import cluster_outcomes_with_gemini
+from src.pipeline.gemini_utils import cluster_outcomes_with_gemini, categorize_primary_and_secondary_outcomes_with_gemini
 
 
 def get_year_from_date(date_str: Optional[str]) -> Optional[int]:
@@ -1083,6 +1083,25 @@ def analyze_trials(
     secondary_outcomes = _flatten_outcomes(df, 'secondary_outcomes') if 'secondary_outcomes' in df.columns else []
     # --- END NEW ---
 
+    # Categorize outcomes with Gemini (now using combined function)
+    categorized_outcomes = categorize_primary_and_secondary_outcomes_with_gemini(primary_outcomes, secondary_outcomes)
+    # Bar plots for categories (by type)
+    if categorized_outcomes:
+        df_cat = pd.DataFrame(categorized_outcomes)
+        for outcome_type in ['primary', 'secondary']:
+            df_type = df_cat[df_cat['type'] == outcome_type]
+            if not df_type.empty:
+                counts = df_type['category'].value_counts().reset_index()
+                counts.columns = ['category', 'count']
+                fig_cat = px.bar(
+                    counts,
+                    x='category', y='count',
+                    labels={'category': 'Category', 'count': 'Count'},
+                    title=f'{outcome_type.capitalize()} Outcomes by Category'
+                )
+                fig_cat.write_html(settings.paths.figures / f"{outcome_type}_outcomes_by_category_{timestamp}.html")
+    # --- END NEW ---
+
     # Create plots - catch any exceptions so the pipeline doesn't fail
     try:
         plots = create_plots(df)
@@ -1204,6 +1223,18 @@ def analyze_trials(
             return obj
         json.dump(convert_to_native(summary_stats), f, indent=2)
     logger.info(f"Analysis completed and saved to {insights_path} and {stats_path}")
+
+    # After flattening outcomes
+    # Save flattened outcomes to a text file
+    outcomes_txt_path = settings.paths.processed_data / f"flattened_outcomes_{timestamp}.txt"
+    with open(outcomes_txt_path, "w") as f:
+        f.write("Primary Outcomes:\n")
+        for o in primary_outcomes:
+            f.write(f"{o}\n")
+        f.write("\nSecondary Outcomes:\n")
+        for o in secondary_outcomes:
+            f.write(f"{o}\n")
+
     return summary_stats, final_insights
 
 

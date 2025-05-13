@@ -7,6 +7,7 @@ for enriching drug information with modality and target data.
 import json
 import logging
 from typing import Dict, Optional
+import re
 
 import google.generativeai as genai
 from google.api_core.exceptions import GoogleAPIError
@@ -339,3 +340,96 @@ Drugs:
     except Exception as e:
         logger.error(f"Failed to parse Gemini batch response: {e}")
         return {name: {"modality": "Unknown", "target": "Unknown", "source": "Gemini"} for name in drug_names} 
+
+def categorize_outcomes_with_gemini(outcomes: list, outcome_type: str = "outcome", batch_size: int = 50) -> list:
+    """
+    Use Gemini to categorize outcome measures into predefined endpoint categories, with batching for large lists.
+    Args:
+        outcomes: List of outcome strings (flattened, normalized)
+        outcome_type: 'primary' or 'secondary' (for prompt clarity)
+        batch_size: Number of outcomes per Gemini call
+    Returns:
+        List of dicts: {"outcome": ..., "category": ...}
+    """
+    if not settings.api_keys.gemini:
+        logger.warning("Gemini API key not set, skipping Gemini query")
+        return []
+    if not initialize_gemini():
+        return []
+    if not outcomes:
+        return []
+    results = []
+    for i in range(0, len(outcomes), batch_size):
+        batch = outcomes[i:i+batch_size]
+        categories = [
+            "Safety/Tolerability",
+            "Pharmacokinetics (PK)",
+            "Biomarkers",
+            "Efficacy: motor",
+            "Efficacy: cognitive",
+            "Efficacy: behavioral",
+            "Efficacy: QoL"
+        ]
+        prompt = f"""
+You are a clinical trial expert. Categorize each {outcome_type} outcome below into one of the following categories:
+- Safety/Tolerability
+- Pharmacokinetics (PK)
+- Biomarkers
+- Efficacy: motor
+- Efficacy: cognitive
+- Efficacy: behavioral
+- Efficacy: QoL
+
+Return ONLY a valid JSON array like this:
+[
+  {{"outcome": "Outcome text", "category": "Efficacy: motor"}},
+  ...
+]
+
+Here are the outcomes:
+""" + "\n".join([f"- {o}" for o in batch]) + "\n\nOnly return valid JSON. Do not include explanations, markdown, or extra text."
+        model = genai.GenerativeModel(settings.gemini_model)
+        response = model.generate_content(prompt, generation_config={"temperature": 0.2, "max_output_tokens": 13000})
+        content = response.text.strip()
+        if not content:
+            logger.error("Gemini response was empty. No content to parse.")
+            continue
+        logger.debug(f"Gemini raw response content: {repr(content)}")
+        # Improved JSON extraction logic
+        json_str = None
+        code_block_match = re.search(r"```(?:json)?\s*(\[.*?\])\s*```", content, re.DOTALL)
+        if code_block_match:
+            json_str = code_block_match.group(1)
+        else:
+            start = content.find('[')
+            end = content.rfind(']')
+            if start != -1 and end != -1 and end > start:
+                json_str = content[start:end+1]
+            else:
+                json_str = content  # fallback
+        try:
+            batch_results = json.loads(json_str)
+            if isinstance(batch_results, list):
+                logger.error(f"Gemini attempted JSON: {json_str}")
+                results.extend(batch_results)
+            else:
+                logger.error(f"Gemini batch did not return a list: {batch_results}")
+        except Exception as e:
+            logger.error(f"Failed to parse Gemini categorization response: {e}")
+            logger.debug(f"Gemini attempted JSON: {json_str}")
+            continue
+    return results
+
+
+def categorize_primary_and_secondary_outcomes_with_gemini(primary_outcomes: list, secondary_outcomes: list, batch_size: int = 30) -> list:
+    """
+    Categorize primary and secondary outcomes using Gemini, making separate API calls for each, and combine the results.
+    Returns a list of dicts: {"outcome": ..., "category": ..., "type": "primary"/"secondary"}
+    """
+    primary_results = categorize_outcomes_with_gemini(primary_outcomes, outcome_type="primary", batch_size=batch_size) if primary_outcomes else []
+    for r in primary_results:
+        r["type"] = "primary"
+    secondary_results = categorize_outcomes_with_gemini(secondary_outcomes, outcome_type="secondary", batch_size=batch_size) if secondary_outcomes else []
+    for r in secondary_results:
+        r["type"] = "secondary"
+    return primary_results + secondary_results
