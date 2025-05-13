@@ -392,6 +392,58 @@ def plot_age_group_distribution(df: pd.DataFrame):
     return fig
 
 
+def plot_modality_by_phase_distribution(df: pd.DataFrame, output_dir: Path, timestamp: str):
+    """
+    Create a stacked bar chart: X=Trial Phase, Y=Count of Trials, Color=Modality.
+    """
+    if 'study_phase' not in df.columns or 'modalities' not in df.columns:
+        logger.warning("Cannot create modality-by-phase chart: missing columns.")
+        return
+    exploded = df.explode('modalities')
+    exploded = exploded.dropna(subset=['study_phase', 'modalities'])
+    if exploded.empty:
+        logger.warning("No data for modality-by-phase chart after filtering.")
+        return
+    # Normalize phase values
+    def map_phase(phase):
+        if not isinstance(phase, str):
+            return "Other"
+        p = phase.strip().upper()
+        mapping = {
+            "PHASE1": "Phase 1",
+            "PHASE2": "Phase 2",
+            "PHASE3": "Phase 3",
+            "PHASE4": "Phase 4",
+            "PHASE1/PHASE2": "Phase 1/2",
+            "PHASE2/PHASE3": "Phase 2/3",
+            "PHASE1/PHASE2/PHASE3": "Phase 1/2/3",
+            "NOT APPLICABLE": "N/A",
+            "N/A": "N/A",
+            "EARLY PHASE 1": "Early Phase 1",
+        }
+        return mapping.get(p, "Other")
+    exploded['study_phase'] = exploded['study_phase'].map(map_phase)
+    # Lowercase and clean modalities
+    exploded['modalities'] = exploded['modalities'].str.lower().str.strip()
+    exploded = exploded[exploded['modalities'] != "unknown"]
+    grouped = exploded.groupby(['study_phase', 'modalities']).size().reset_index(name='count')
+    phase_order = [
+        'Phase 1', 'Phase 1/2', 'Phase 2', 'Phase 2/3', 'Phase 3', 'Phase 4', 'N/A', 'Early Phase 1', 'Other', 'Phase 1/2/3'
+    ]
+    grouped['study_phase'] = pd.Categorical(grouped['study_phase'], categories=phase_order, ordered=True)
+    fig = px.bar(
+        grouped,
+        x='study_phase',
+        y='count',
+        color='modalities',
+        title='Modality-by-Phase Distribution of Clinical Trials',
+        labels={'study_phase': 'Trial Phase', 'count': 'Number of Trials', 'modalities': 'Modality'},
+        category_orders={'study_phase': phase_order}
+    )
+    fig.update_layout(barmode='stack', height=600)
+    fig.write_html(output_dir / f"modality_by_phase_distribution_{timestamp}.html")
+
+
 @log_execution_time
 def create_plots(
     df: pd.DataFrame, output_dir: Optional[Path] = None
@@ -421,6 +473,13 @@ def create_plots(
     if df.empty:
         logger.warning("Cannot create plots: DataFrame is empty")
         return plots
+    
+    # --- NEW: Modality-by-Phase Distribution Chart ---
+    try:
+        plot_modality_by_phase_distribution(df, output_dir, timestamp)
+    except Exception as e:
+        logger.error(f"Error creating modality-by-phase distribution chart: {e}")
+    # --- END NEW ---
     
     # 1. Stacked area chart of modality shares over time
     try:

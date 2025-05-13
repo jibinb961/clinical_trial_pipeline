@@ -410,7 +410,7 @@ Here are the outcomes:
         try:
             batch_results = json.loads(json_str)
             if isinstance(batch_results, list):
-                logger.error(f"Gemini attempted JSON: {json_str}")
+                logger.info(f"Gemini attempted JSON: {len(json_str)} characters")
                 results.extend(batch_results)
             else:
                 logger.error(f"Gemini batch did not return a list: {batch_results}")
