@@ -341,7 +341,7 @@ Drugs:
         logger.error(f"Failed to parse Gemini batch response: {e}")
         return {name: {"modality": "Unknown", "target": "Unknown", "source": "Gemini"} for name in drug_names} 
 
-def categorize_outcomes_with_gemini(outcomes: list, outcome_type: str = "outcome", batch_size: int = 50) -> list:
+def categorize_outcomes_with_gemini(outcomes: list, outcome_type: str = "outcome", batch_size: int = 70) -> list:
     """
     Use Gemini to categorize outcome measures into predefined endpoint categories, with batching for large lists.
     Args:
@@ -421,7 +421,7 @@ Here are the outcomes:
     return results
 
 
-def categorize_primary_and_secondary_outcomes_with_gemini(primary_outcomes: list, secondary_outcomes: list, batch_size: int = 30) -> list:
+def categorize_primary_and_secondary_outcomes_with_gemini(primary_outcomes: list, secondary_outcomes: list, batch_size: int = 70) -> list:
     """
     Categorize primary and secondary outcomes using Gemini, making separate API calls for each, and combine the results.
     Returns a list of dicts: {"outcome": ..., "category": ..., "type": "primary"/"secondary"}

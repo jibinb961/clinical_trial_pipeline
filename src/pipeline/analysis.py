@@ -18,7 +18,7 @@ import plotly.express as px
 from plotly.graph_objects import Figure as PlotlyFigure
 import plotly.graph_objects as go
 import re
-from collections import Counter
+from collections import Counter, defaultdict
 
 
 from src.pipeline.config import settings
@@ -1100,7 +1100,13 @@ def analyze_trials(
                     title=f'{outcome_type.capitalize()} Outcomes by Category'
                 )
                 fig_cat.write_html(settings.paths.figures / f"{outcome_type}_outcomes_by_category_{timestamp}.html")
-    # --- END NEW ---
+    # Group categorized outcomes for LLM insights
+    def group_outcomes_by_category(categorized_outcomes):
+        grouped = defaultdict(lambda: defaultdict(list))
+        for item in categorized_outcomes:
+            grouped[item['type']][item['category']].append(item['outcome'])
+        return grouped
+    grouped_outcomes = group_outcomes_by_category(categorized_outcomes) if categorized_outcomes else None
 
     # Create plots - catch any exceptions so the pipeline doesn't fail
     try:
@@ -1139,7 +1145,8 @@ def analyze_trials(
             top_primary_clusters=top_primary_clusters,
             top_secondary_clusters=top_secondary_clusters,
             primary_outcomes=primary_outcomes,
-            secondary_outcomes=secondary_outcomes
+            secondary_outcomes=secondary_outcomes,
+            categorized_outcomes=grouped_outcomes
         )
     except Exception as e:
         logger.error(f"Error generating insights: {e}")
@@ -1320,7 +1327,7 @@ def plot_enrollment_quartiles_box(df, output_dir, timestamp):
     plt.savefig(output_dir / f"enrollment_quartiles_box_{timestamp}.png", dpi=300)
     plt.close()
 
-def generate_llm_insights(df: pd.DataFrame, top_primary_clusters=None, top_secondary_clusters=None, primary_outcomes=None, secondary_outcomes=None) -> str:
+def generate_llm_insights(df: pd.DataFrame, top_primary_clusters=None, top_secondary_clusters=None, primary_outcomes=None, secondary_outcomes=None, categorized_outcomes=None) -> str:
     """
     Generate a detailed insights report using Gemini LLM, summarizing key statistics, trends, and findings from the clinical trials data.
     Falls back to manual bullet points if LLM call fails.
@@ -1378,6 +1385,25 @@ Clinical Trials Context:
         return '\n'.join(lines)
     primary_cluster_section = format_clusters_for_prompt(top_primary_clusters, 'Primary Outcome')
     secondary_cluster_section = format_clusters_for_prompt(top_secondary_clusters, 'Secondary Outcome')
+    # --- NEW: Add categorized outcomes to the prompt ---
+    def format_categorized_section(categorized_outcomes, outcome_type):
+        if not categorized_outcomes or outcome_type not in categorized_outcomes:
+            return f"No {outcome_type} outcomes found."
+        lines = [f"### {outcome_type.capitalize()} Outcomes by Category:"]
+        for cat, outcomes in categorized_outcomes[outcome_type].items():
+            lines.append(f"- **{cat}** ({len(outcomes)}):")
+            for o in outcomes[:5]:
+                lines.append(f"    - {o}")
+            if len(outcomes) > 5:
+                lines.append(f"    ...and {len(outcomes)-5} more.")
+        return '\n'.join(lines)
+    if categorized_outcomes:
+        categorized_section = (
+            format_categorized_section(categorized_outcomes, 'primary') + '\n\n' +
+            format_categorized_section(categorized_outcomes, 'secondary')
+        )
+    else:
+        categorized_section = ""
     # --- NEW: Add outcomes to the prompt ---
     primary_outcomes_section = f"Top Primary Outcomes (raw):\n- " + "\n- ".join(primary_outcomes) if primary_outcomes else "No primary outcomes found."
     secondary_outcomes_section = f"Top Secondary Outcomes (raw):\n- " + "\n- ".join(secondary_outcomes) if secondary_outcomes else "No secondary outcomes found."
@@ -1402,17 +1428,19 @@ Top targets (by number of trials):
 Number of new trials started per year:
 {json.dumps(yearly_counts, indent=2)}
 
+{categorized_section}
+
 {primary_outcomes_section}
 
 {secondary_outcomes_section}
 
-Please generate a section for top primary and secondary outcomes, using the provided lists. If possible, also:
-- Identify any emerging trends or shifts in research focus
-- Comment on the distribution of trial phases and enrollment sizes
-- Note any sponsors with increasing or decreasing activity
-- Suggest potential strategic priorities or risks
+For the Primary and Secondary Outcomes analysis section, please provide a markdown table for each (primary and secondary) with the following columns:
+- Outcome Category
+- Count
+- Top Outcomes (up to 5 examples)
+- Explanation (briefly describe what this category means in the context of clinical trials)
 
-Format your response in markdown with clear sections and bullet points where appropriate.
+Do not use bullet points for this section. Use markdown tables only. For all other sections, use markdown with clear sections and bullet points where appropriate.
 """
 
     try:
