@@ -1491,7 +1491,7 @@ def generate_llm_insights(df: pd.DataFrame, top_primary_clusters=None, top_secon
     Falls back to manual bullet points if LLM call fails.
     """
     import json
-    from llm_module import generate_pipeline_insights
+    from src.pipeline.gemini_utils import generate_pipeline_insights
     if df.empty:
         return "No clinical trials data available for insights generation."
     # Prepare summary statistics
@@ -1566,10 +1566,6 @@ Top targets (by number of trials):
 
 Number of new trials started per year:
 {json.dumps(yearly_counts, indent=2)}
-
-{primary_cluster_section}
-
-{secondary_cluster_section}
 
 {primary_outcomes_section}
 

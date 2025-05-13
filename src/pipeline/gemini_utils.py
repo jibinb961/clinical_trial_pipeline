@@ -279,3 +279,63 @@ Output as JSON with this structure:
         logger.warning(f"Unexpected error querying Gemini for outcome clustering: {e}")
         return {}
     return {} 
+
+def generate_pipeline_insights(prompt: str) -> str:
+    """
+    Generate a pipeline-level insights report using Gemini LLM given a prompt string.
+    Args:
+        prompt: The prompt string to send to Gemini
+    Returns:
+        The LLM-generated report as a string
+    """
+    if not settings.api_keys.gemini:
+        return "Error: Gemini API key not configured. Please set the GEMINI_API_KEY environment variable."
+    try:
+        model = genai.GenerativeModel(settings.gemini_model)
+        response = model.generate_content(prompt)
+        return response.text
+    except Exception as e:
+        return f"Error generating pipeline insights: {str(e)}" 
+
+async def batch_query_gemini(drug_names):
+    if not drug_names:
+        return {}
+    if not initialize_gemini():
+        return {name: {"modality": "Unknown", "target": "Unknown", "source": "Gemini"} for name in drug_names}
+    prompt = f"""
+You are a pharmacology and drug development expert. For each drug name below, provide its modality and target.
+
+**Instructions:**
+- Ignore dosage, formulation, and administration route information (e.g., mg, BID, capsules, tablets, oral, injection, etc.) and focus on the core drug name.
+- For drug names with slashes ("/"), plus signs ("+"), or "and", treat these as combinations and return a list of modalities and a list of targets for each component, in the same order as the drugs in the name.
+- If a drug is an internal code or investigational compound, attempt to infer its modality and target from any available public information or typical drug class. Only return 'Unknown' if absolutely no information is available.
+- For persistent unknowns, suggest a likely class or mechanism if possible, even if generic (e.g., 'investigational small-molecule', 'unknown target').
+- For each drug, return a JSON object with:
+    - "name": the drug name
+    - "modality": the type (e.g., small-molecule, monoclonal antibody, siRNA, peptide, gene therapy, cell therapy, vaccine, placebo, device, procedure, other)
+    - "target": Prefer gene symbols, protein names, or well-known pathway names. If only a generic target is known (e.g., 'dopamine receptor', 'immune system', 'bacterial cell wall'), use that rather than 'Unknown'.
+- For placebos, always return 'placebo' for both modality and target.
+- If the drug is a device, procedure, or not a drug, return 'device', 'procedure', or 'other' as the modality and a generic target if possible.
+- Only return 'Unknown' if there is truly no information available after considering all generic/functional targets.
+- Respond in this JSON format:
+{{
+  "drugs": [
+    {{
+    ...
+  ]
+}}
+
+Drugs:
+{json.dumps(drug_names, indent=2)}
+"""
+    model = genai.GenerativeModel(settings.gemini_model)
+    response = model.generate_content(prompt, generation_config={"temperature": 0.2, "max_output_tokens": 2048})
+    content = response.text.strip()
+    try:
+        start = content.find('{')
+        end = content.rfind('}')+1
+        data = json.loads(content[start:end])
+        return {d['name']: {"modality": d['modality'], "target": d['target'], "source": "Gemini"} for d in data['drugs']}
+    except Exception as e:
+        logger.error(f"Failed to parse Gemini batch response: {e}")
+        return {name: {"modality": "Unknown", "target": "Unknown", "source": "Gemini"} for name in drug_names} 

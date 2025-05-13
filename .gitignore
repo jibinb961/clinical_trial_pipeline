@@ -25,6 +25,9 @@ venv/
 ENV/
 .env
 
+data/.DS_Store
+data/cache/
+
 # Data
 data/raw/*
 !data/raw/.gitkeep
