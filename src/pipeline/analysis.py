@@ -1436,7 +1436,6 @@ Number of new trials started per year:
 
 For the Primary and Secondary Outcomes analysis section, please provide a markdown table for each (primary and secondary) with the following columns:
 - Outcome Category
-- Count
 - Top Outcomes (up to 5 examples)
 - Explanation (briefly describe what this category means in the context of clinical trials)
 
