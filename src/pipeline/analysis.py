@@ -358,28 +358,6 @@ def plot_top_outcomes_normalized(df: pd.DataFrame, outcome_col: str, title: str,
     return fig
 
 
-try:
-    from wordcloud import WordCloud
-    WORDCLOUD_AVAILABLE = True
-except ImportError:
-    WORDCLOUD_AVAILABLE = False
-
-def plot_outcome_wordcloud(df: pd.DataFrame, outcome_col: str, title: str):
-    """Generate a word cloud from normalized outcome measures."""
-    if not WORDCLOUD_AVAILABLE:
-        return None
-    all_outcomes = [normalize_outcome_text(item) for sublist in df[outcome_col].dropna() for item in (sublist if isinstance(sublist, list) else [sublist])]
-    text = " ".join(all_outcomes)
-    if not text.strip():
-        return None
-    wc = WordCloud(width=800, height=400, background_color='white').generate(text)
-    fig, ax = plt.subplots(figsize=(10, 5))
-    ax.imshow(wc, interpolation='bilinear')
-    ax.axis('off')
-    ax.set_title(title + " (Word Cloud)")
-    return fig
-
-
 def plot_age_distribution(df: pd.DataFrame):
     """Boxplot and histogram for minimum and maximum age (in years)."""
     age_df = df[['minimum_age', 'maximum_age']].copy()
@@ -809,12 +787,6 @@ def create_plots(
             if fig_primary_norm:
                 plots['top_primary_outcomes_normalized'] = fig_primary_norm
                 fig_primary_norm.write_html(output_dir / f"top_primary_outcomes_normalized_{timestamp}.html")
-            # Word cloud
-            fig_wc = plot_outcome_wordcloud(df, 'primary_outcomes', 'Top Primary Outcome Measures')
-            if fig_wc:
-                fig_wc_path = output_dir / f"top_primary_outcomes_wordcloud_{timestamp}.png"
-                fig_wc.savefig(fig_wc_path, bbox_inches='tight')
-                plt.close(fig_wc)
     except Exception as e:
         logger.error(f"Error creating normalized primary outcomes plot: {e}")
     # Add: Top Secondary Outcomes (normalized)
@@ -824,12 +796,6 @@ def create_plots(
             if fig_secondary_norm:
                 plots['top_secondary_outcomes_normalized'] = fig_secondary_norm
                 fig_secondary_norm.write_html(output_dir / f"top_secondary_outcomes_normalized_{timestamp}.html")
-            # Word cloud
-            fig_wc = plot_outcome_wordcloud(df, 'secondary_outcomes', 'Top Secondary Outcome Measures')
-            if fig_wc:
-                fig_wc_path = output_dir / f"top_secondary_outcomes_wordcloud_{timestamp}.png"
-                fig_wc.savefig(fig_wc_path, bbox_inches='tight')
-                plt.close(fig_wc)
     except Exception as e:
         logger.error(f"Error creating normalized secondary outcomes plot: {e}")
     # Add: Age Distribution
@@ -1241,109 +1207,6 @@ def analyze_trials(
     return summary_stats, final_insights
 
 
-def extract_outcomes_for_clustering(df: pd.DataFrame, outcome_col: str) -> list:
-    """
-    Extract all unique outcomes (with measure, description, timeframe) for clustering.
-    Returns a list of dicts with keys: measure, description, timeFrame
-    """
-    unique_outcomes = set()
-    outcome_dicts = []
-    for outcomes in df[outcome_col].dropna():
-        if isinstance(outcomes, list):
-            for o in outcomes:
-                if isinstance(o, dict):
-                    key = (o.get('measure', ''), o.get('description', ''), o.get('timeFrame', ''))
-                    if key not in unique_outcomes:
-                        unique_outcomes.add(key)
-                        outcome_dicts.append({
-                            'measure': o.get('measure', ''),
-                            'description': o.get('description', ''),
-                            'timeFrame': o.get('timeFrame', '')
-                        })
-                elif isinstance(o, str):
-                    key = (o, '', '')
-                    if key not in unique_outcomes:
-                        unique_outcomes.add(key)
-                        outcome_dicts.append({'measure': o, 'description': '', 'timeFrame': ''})
-        elif isinstance(outcomes, dict):
-            key = (outcomes.get('measure', ''), outcomes.get('description', ''), outcomes.get('timeFrame', ''))
-            if key not in unique_outcomes:
-                unique_outcomes.add(key)
-                outcome_dicts.append({
-                    'measure': outcomes.get('measure', ''),
-                    'description': outcomes.get('description', ''),
-                    'timeFrame': outcomes.get('timeFrame', '')
-                })
-        elif isinstance(outcomes, str):
-            key = (outcomes, '', '')
-            if key not in unique_outcomes:
-                unique_outcomes.add(key)
-                outcome_dicts.append({'measure': outcomes, 'description': '', 'timeFrame': ''})
-    return outcome_dicts
-
-
-def map_canonical_outcomes(df: pd.DataFrame, outcome_col: str, mapping: dict, new_label_col: str, new_summary_col: str):
-    """
-    Map canonical label and summary to each outcome in the DataFrame using the Gemini mapping.
-    Adds new columns to the DataFrame for each outcome type.
-    """
-    def map_outcome_list(outcomes):
-        if not isinstance(outcomes, list):
-            return [], []
-        labels, summaries = [], []
-        for o in outcomes:
-            if isinstance(o, dict):
-                key = " | ".join(filter(None, [o.get('measure', ''), f"Description: {o.get('description', '')}" if o.get('description', '') else '', f"Timeframe: {o.get('timeFrame', '')}" if o.get('timeFrame', '') else '']))
-            elif isinstance(o, str):
-                key = o
-            else:
-                key = str(o)
-            result = mapping.get(key, {})
-            labels.append(result.get('canonical', ''))
-            summaries.append(result.get('summary', ''))
-        return labels, summaries
-    df[new_label_col], df[new_summary_col] = zip(*df[outcome_col].apply(map_outcome_list))
-    return df 
-
-
-def plot_top_canonical_outcomes(df: pd.DataFrame, canonical_col: str, title: str, top_n: int = 10):
-    """Horizontal bar chart of top N canonical outcome labels (primary or secondary)."""
-    all_labels = [item for sublist in df[canonical_col].dropna() for item in (sublist if isinstance(sublist, list) else [sublist])]
-    all_labels = [x for x in all_labels if x]
-    if not all_labels:
-        return None
-    outcome_counts = Counter(all_labels).most_common(top_n)
-    outcome_df = pd.DataFrame(outcome_counts, columns=["Canonical Outcome", "Count"])
-    fig = px.bar(
-        outcome_df,
-        x="Count",
-        y="Canonical Outcome",
-        orientation="h",
-        title=title + " (Canonical)",
-        labels={"Canonical Outcome": "Outcome", "Count": "Count"},
-    )
-    fig.update_layout(height=500, yaxis={'categoryorder':'total ascending'})
-    return fig
-
-
-def plot_canonical_outcome_wordcloud(df: pd.DataFrame, canonical_col: str, title: str):
-    """Generate a word cloud from canonical outcome labels."""
-    try:
-        from wordcloud import WordCloud
-        import matplotlib.pyplot as plt
-    except ImportError:
-        return None
-    all_labels = [item for sublist in df[canonical_col].dropna() for item in (sublist if isinstance(sublist, list) else [sublist])]
-    text = " ".join(all_labels)
-    if not text.strip():
-        return None
-    wc = WordCloud(width=800, height=400, background_color='white').generate(text)
-    fig, ax = plt.subplots(figsize=(10, 5))
-    ax.imshow(wc, interpolation='bilinear')
-    ax.axis('off')
-    ax.set_title(title + " (Word Cloud)")
-    return fig
-
 # --- NEW: Helper functions for extracting unique lists and quartiles ---
 def get_unique_flat_list(df, col):
     """Extract a flat set of unique items from a column of lists or lists of lists."""
@@ -1425,65 +1288,6 @@ def plot_enrollment_quartiles_box(df, output_dir, timestamp):
     plt.tight_layout()
     plt.savefig(output_dir / f"enrollment_quartiles_box_{timestamp}.png", dpi=300)
     plt.close()
-
-def plot_outcome_clusters(df, cluster_col, title, output_dir, timestamp, top_n=10):
-    """
-    Bar plot of top N clusters (by count) and table of representative outcomes.
-    """
-    from collections import Counter
-    # Flatten and count clusters
-    all_clusters = [item for sublist in df[cluster_col].dropna() for item in (sublist if isinstance(sublist, list) else [sublist])]
-    all_clusters = [x for x in all_clusters if x]
-    if not all_clusters:
-        return
-    cluster_counts = Counter(all_clusters).most_common(top_n)
-    labels, values = zip(*cluster_counts)
-    # Bar plot
-    plt.figure(figsize=(10, 6))
-    plt.barh(labels[::-1], values[::-1], color='teal')
-    plt.title(f"Top {top_n} {title} Clusters")
-    plt.xlabel("Count")
-    plt.tight_layout()
-    plt.savefig(output_dir / f"top_{title.replace(' ', '_').lower()}_clusters_bar_{timestamp}.png", dpi=300)
-    plt.close()
-    # Table: show top clusters and example outcomes
-    table_path = output_dir / f"top_{title.replace(' ', '_').lower()}_clusters_table_{timestamp}.csv"
-    import csv
-    with open(table_path, 'w', newline='') as csvfile:
-        writer = csv.writer(csvfile)
-        writer.writerow(["Cluster Label", "Count", "Example Outcomes"])
-        for label, count in cluster_counts:
-            # Get up to 3 example outcomes for this cluster
-            examples = []
-            for idx, row in df.iterrows():
-                if label in (row[cluster_col] if isinstance(row[cluster_col], list) else [row[cluster_col]]):
-                    # Find the original outcome(s) for this row
-                    origs = row.get('primary_outcomes', []) if 'primary' in cluster_col else row.get('secondary_outcomes', [])
-                    if isinstance(origs, list):
-                        examples.extend(origs)
-                    elif isinstance(origs, str):
-                        examples.append(origs)
-                if len(examples) >= 3:
-                    break
-            writer.writerow([label, count, "; ".join(examples[:3])])
-
-# --- NEW: LLM-based clustering for outcome measures ---
-def cluster_and_annotate_outcomes(df, outcome_col, cluster_col, summary_col):
-    """
-    Use LLM to cluster outcome sentences and annotate the DataFrame with cluster labels and summaries.
-    """
-    from src.pipeline.gemini_utils import cluster_outcomes_with_gemini
-    # Extract all unique outcomes (with measure, description, timeframe)
-    unique_outcomes = extract_outcomes_for_clustering(df, outcome_col)
-    if not unique_outcomes:
-        return df, {}
-    # Call LLM to cluster outcomes
-    cluster_mapping = cluster_outcomes_with_gemini(unique_outcomes, outcome_type=outcome_col)
-    # Map canonical label and summary to each outcome in the DataFrame
-    df = map_canonical_outcomes(df, outcome_col, cluster_mapping, cluster_col, summary_col)
-    return df, cluster_mapping
-
-# --- END NEW HELPERS --- 
 
 def generate_llm_insights(df: pd.DataFrame, top_primary_clusters=None, top_secondary_clusters=None, primary_outcomes=None, secondary_outcomes=None) -> str:
     """
