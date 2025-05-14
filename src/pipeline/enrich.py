@@ -131,7 +131,7 @@ def query_chembl_client(drug_name: str) -> Optional[Dict[str, str]]:
     logger.info(f"Querying ChEMBL for {drug_name}")
     try:
         # Disable ChEMBL's own local caching
-        Settings.Instance().CACHING = False
+        Settings.Instance().CACHING = True
         molecule = new_client.molecule
         mechanism = new_client.mechanism
         target = new_client.target
