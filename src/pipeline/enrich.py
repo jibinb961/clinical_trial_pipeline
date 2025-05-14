@@ -263,8 +263,11 @@ async def enrich_drugs(drug_names: Set[str]) -> Dict[str, Dict[str, Any]]:
     unresolved = set()
     placebo_set = set()
     combo_map = {}
+    # --- NEW: Track all preprocessed drug names ---
+    all_preprocessed_drugs = set()
     for orig_name in tqdm(drug_names, desc="Preprocessing and ChEMBL lookup"):
         parts, origs, normed, _ = preprocess_drug_name(orig_name)
+        all_preprocessed_drugs.update(parts)
         if len(parts) > 1:
             combo_map[orig_name] = parts
         modalities, targets, sources = [], [], []
@@ -418,6 +421,7 @@ def apply_enrichment_to_trials(trials_df: pd.DataFrame, drug_info: Dict[str, Dic
                     "source": source
                 })
         report_df = pd.DataFrame(rows)
+        report_df = report_df.drop_duplicates(subset=["nct_id", "drug", "modality", "target", "source"])
         report_path = settings.paths.processed_data / f"enrichment_report_{timestamp}.csv"
         report_df.to_csv(report_path, index=False)
         logger.info(f"Saved enrichment report to {report_path}")

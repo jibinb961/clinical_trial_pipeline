@@ -1276,34 +1276,7 @@ def analyze_trials(
     insights_path = settings.paths.processed_data / f"insights_{timestamp}.md"
     with open(insights_path, "w") as f:
         f.write(final_insights)
-    # Save summary stats to file
-    stats_path = settings.paths.processed_data / f"stats_{timestamp}.json"
-    import json
-    with open(stats_path, "w") as f:
-        # Convert NumPy types to Python native types for JSON serialization
-        def convert_to_native(obj):
-            if isinstance(obj, (np.integer, np.int64)):
-                return int(obj)
-            elif isinstance(obj, (np.floating, np.float64)):
-                return float(obj)
-            elif isinstance(obj, np.ndarray):
-                return obj.tolist()
-            elif isinstance(obj, dict):
-                return {k: convert_to_native(v) for k, v in obj.items()}
-            return obj
-        json.dump(convert_to_native(summary_stats), f, indent=2)
-    logger.info(f"Analysis completed and saved to {insights_path} and {stats_path}")
-
-    # After flattening outcomes
-    # Save flattened outcomes to a text file
-    outcomes_txt_path = settings.paths.processed_data / f"flattened_outcomes_{timestamp}.txt"
-    with open(outcomes_txt_path, "w") as f:
-        f.write("Primary Outcomes:\n")
-        for o in primary_outcomes:
-            f.write(f"{o}\n")
-        f.write("\nSecondary Outcomes:\n")
-        for o in secondary_outcomes:
-            f.write(f"{o}\n")
+    logger.info(f"Analysis completed and saved to {insights_path}")
 
     return summary_stats, final_insights
 
@@ -1389,6 +1362,38 @@ def plot_enrollment_quartiles_box(df, output_dir, timestamp):
     plt.tight_layout()
     plt.savefig(output_dir / f"enrollment_quartiles_box_{timestamp}.png", dpi=300)
     plt.close()
+
+def generate_treatment_details_table(df: pd.DataFrame, output_dir: Optional[Path] = None, timestamp: Optional[str] = None) -> Optional[Path]:
+    """Generate a structured HTML table of treatment details for all trials."""
+    if 'treatment_details' not in df.columns or df['treatment_details'].dropna().empty:
+        logger.warning("No treatment details found in DataFrame.")
+        return None
+    rows = []
+    for _, row in df.iterrows():
+        nct_id = row.get('nct_id')
+        details = row.get('treatment_details', [])
+        for d in details:
+            rows.append({
+                'NCT ID': nct_id,
+                'Intervention Name': d.get('intervention_name'),
+                'Type': d.get('intervention_type'),
+                'Arm Group': d.get('arm_group_label'),
+                'Arm Group Description': d.get('arm_group_description'),
+                'Intervention Description': d.get('intervention_description'),
+            })
+    if not rows:
+        logger.warning("No treatment details to tabulate.")
+        return None
+    table_df = pd.DataFrame(rows)
+    if output_dir is None:
+        output_dir = settings.paths.figures
+    os.makedirs(output_dir, exist_ok=True)
+    if timestamp is None:
+        timestamp = get_timestamp()
+    html_path = output_dir / f"treatment_details_{timestamp}.html"
+    table_df.to_html(html_path, index=False, escape=False)
+    logger.info(f"Saved treatment details table to {html_path}")
+    return html_path
 
 def generate_llm_insights(df: pd.DataFrame, top_primary_clusters=None, top_secondary_clusters=None, primary_outcomes=None, secondary_outcomes=None, categorized_outcomes=None) -> str:
     """
