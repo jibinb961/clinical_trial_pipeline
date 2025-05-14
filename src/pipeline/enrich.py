@@ -17,6 +17,7 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import Session
 from tqdm.asyncio import tqdm
 from chembl_webresource_client.new_client import new_client
+from chembl_webresource_client.settings import Settings
 
 from src.pipeline.config import settings
 from src.pipeline.gemini_utils import query_gemini_for_drug_info, initialize_gemini, batch_query_gemini
@@ -127,32 +128,33 @@ def query_chembl_client(drug_name: str) -> Optional[Dict[str, str]]:
     Returns:
         Dictionary with modality and target or None if not found
     """
-    # STEP 4: Query ChEMBL API using Python client
     logger.info(f"Querying ChEMBL for {drug_name}")
-    
     try:
-        # Initialize ChEMBL client resources
+        # Disable ChEMBL's own local caching
+        Settings.Instance().CACHING = False
         molecule = new_client.molecule
         mechanism = new_client.mechanism
         target = new_client.target
-        
-        # Search for the drug by name
-        results = molecule.filter(pref_name__iexact=drug_name)
-        if not results:
-            # Try a more flexible search if exact match fails
-            results = molecule.filter(molecule_synonyms__molecule_synonym__icontains=drug_name)
-            
+        # Try exact match
+        results = molecule.filter(pref_name__iexact=drug_name).only(['molecule_chembl_id', 'molecule_type', 'pref_name'])
+        if results:
+            logger.info(f"ChEMBL exact match for {drug_name}")
+        else:
+            # Try synonym match
+            results = molecule.filter(molecule_synonyms__molecule_synonym__icontains=drug_name).only(['molecule_chembl_id', 'molecule_type', 'pref_name'])
+            if results:
+                logger.info(f"ChEMBL synonym match for {drug_name}")
+            else:
+                # Try partial match
+                results = molecule.filter(pref_name__icontains=drug_name).only(['molecule_chembl_id', 'molecule_type', 'pref_name'])
+                if results:
+                    logger.info(f"ChEMBL partial match for {drug_name}")
         if not results:
             logger.debug(f"Drug not found in ChEMBL: {drug_name}")
             return None
-            
-        # Get the first matching molecule
         molecule_data = results[0]
         chembl_id = molecule_data['molecule_chembl_id']
-        
-        # Determine modality from molecule type
         molecule_type = molecule_data.get('molecule_type', '')
-        
         # Map ChEMBL molecule types to our standardized modalities
         modality_mapping = {
             'Small molecule': 'small-molecule',
@@ -164,51 +166,24 @@ def query_chembl_client(drug_name: str) -> Optional[Dict[str, str]]:
             'Gene': 'gene therapy',
             'Oligosaccharide': 'small-molecule',
         }
-        
         modality = modality_mapping.get(molecule_type, 'Unknown')
-        
-        # Get mechanism of action data
+        # Get all mechanisms
         moa_results = mechanism.filter(molecule_chembl_id=chembl_id)
-        
-        if not moa_results:
-            # Return with just the modality if no mechanism is found
-            return {
-                "name": drug_name,
-                "modality": modality,
-                "target": "Unknown",
-                "source": "ChEMBL",
-            }
-            
-        # Extract target information
         target_ids = [m.get('target_chembl_id') for m in moa_results if 'target_chembl_id' in m]
-        
-        if not target_ids:
-            return {
-                "name": drug_name,
-                "modality": modality,
-                "target": "Unknown",
-                "source": "ChEMBL",
-            }
-            
-        # Get target details
         target_names = []
         for target_id in target_ids:
-            target_info = target.filter(target_chembl_id=target_id)
+            target_info = target.filter(target_chembl_id=target_id).only(['pref_name'])
             if target_info:
                 target_name = target_info[0].get('pref_name', '')
                 if target_name:
                     target_names.append(target_name)
-                    
-        # Join multiple targets with commas
         target_str = ", ".join(target_names) if target_names else "Unknown"
-        
         return {
             "name": drug_name,
             "modality": modality,
             "target": target_str,
             "source": "ChEMBL",
         }
-        
     except Exception as e:
         logger.warning(f"Error querying ChEMBL for {drug_name}: {e}")
         return None
