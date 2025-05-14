@@ -151,6 +151,7 @@ def generate_modality_counts(
         exploded_df["modalities"] = exploded_df["modalities"].str.lower()
     modality_counts = exploded_df["modalities"].value_counts().reset_index()
     modality_counts.columns = ["modality", "count"]
+    modality_counts = modality_counts.sort_values("count", ascending=False).head(30)
     return modality_counts
 
 
@@ -166,7 +167,7 @@ def generate_target_counts(
     target_counts = exploded_df["targets"].value_counts().reset_index()
     target_counts.columns = ["target", "count"]
     target_counts = target_counts[target_counts["target"] != "unknown"]
-    target_counts = target_counts.head(20)
+    target_counts = target_counts.head(30)
     return target_counts
 
 
@@ -217,7 +218,7 @@ def generate_yearly_modality_data(
     return pivot_df
 
 
-def generate_sponsor_activity_over_time(df: pd.DataFrame, top_n: int = 5) -> pd.DataFrame:
+def generate_sponsor_activity_over_time(df: pd.DataFrame, top_n: int = 30) -> pd.DataFrame:
     """Generate a DataFrame showing the number of new trials per year for top sponsors."""
     if 'lead_sponsor' not in df.columns or 'start_date' not in df.columns:
         return pd.DataFrame()
@@ -233,7 +234,7 @@ def generate_sponsor_activity_over_time(df: pd.DataFrame, top_n: int = 5) -> pd.
     return sponsor_year
 
 
-def plot_top_sponsors(df: pd.DataFrame, output_dir: Optional[Path] = None, top_n: int = 10, timestamp: Optional[str] = None):
+def plot_top_sponsors(df: pd.DataFrame, output_dir: Optional[Path] = None, top_n: int = 30, timestamp: Optional[str] = None):
     """Bar chart of top sponsors by number of trials."""
     if 'lead_sponsor' not in df.columns or df['lead_sponsor'].dropna().empty:
         logger.warning("'lead_sponsor' column missing or empty, skipping top sponsors plot.")
@@ -275,7 +276,7 @@ def plot_status_distribution(df: pd.DataFrame, output_dir: Optional[Path] = None
     plt.close()
 
 
-def plot_enrollment_by_sponsor(df: pd.DataFrame, output_dir: Optional[Path] = None, top_n: int = 5, timestamp: Optional[str] = None):
+def plot_enrollment_by_sponsor(df: pd.DataFrame, output_dir: Optional[Path] = None, top_n: int = 30, timestamp: Optional[str] = None):
     """Boxplot of enrollment sizes by top sponsors."""
     if 'lead_sponsor' not in df.columns or 'enrollment_count' not in df.columns:
         logger.warning("'lead_sponsor' or 'enrollment_count' column missing, skipping enrollment by sponsor plot.")
@@ -301,7 +302,7 @@ def plot_enrollment_by_sponsor(df: pd.DataFrame, output_dir: Optional[Path] = No
     plt.close()
 
 
-def generate_sankey_data(df: pd.DataFrame, top_n: int = 5):
+def generate_sankey_data(df: pd.DataFrame, top_n: int = 30):
     """Prepare data for a Sankey diagram: Sponsor -> Modality -> Target."""
     if not all(col in df.columns for col in ['lead_sponsor', 'modalities', 'targets']):
         return None, None, None
@@ -643,13 +644,13 @@ def create_plots(
     # Add: Top Sponsors (Plotly)
     try:
         if 'lead_sponsor' in df.columns and not df['lead_sponsor'].dropna().empty:
-            sponsor_counts = df['lead_sponsor'].value_counts().head(10).reset_index()
+            sponsor_counts = df['lead_sponsor'].value_counts().head(30).reset_index()
             sponsor_counts.columns = ['sponsor', 'count']
             fig_sponsors = px.bar(
                 sponsor_counts,
                 x='sponsor',
                 y='count',
-                title='Top 10 Sponsors by Number of Trials',
+                title='Top 30 Sponsors by Number of Trials',
                 labels={'sponsor': 'Sponsor', 'count': 'Number of Trials'},
             )
             fig_sponsors.update_layout(
@@ -713,14 +714,14 @@ def create_plots(
     # Add: Enrollment by Sponsor (Plotly)
     try:
         if 'lead_sponsor' in df.columns and 'enrollment_count' in df.columns:
-            top_sponsors = df['lead_sponsor'].value_counts().head(5).index
+            top_sponsors = df['lead_sponsor'].value_counts().head(30).index
             filtered = df[df['lead_sponsor'].isin(top_sponsors) & df['enrollment_count'].notna()]
             if not filtered.empty:
                 fig_enroll_sponsor = px.box(
                     filtered,
                     x='lead_sponsor',
                     y='enrollment_count',
-                    title='Enrollment Size by Top 5 Sponsors',
+                    title='Enrollment Size by Top 30 Sponsors',
                     labels={'lead_sponsor': 'Sponsor', 'enrollment_count': 'Enrollment Count'},
                 )
                 fig_enroll_sponsor.update_layout(
@@ -751,7 +752,7 @@ def create_plots(
     
     # Add: Sponsor activity over time (Plotly)
     try:
-        sponsor_year = generate_sponsor_activity_over_time(df, top_n=5)
+        sponsor_year = generate_sponsor_activity_over_time(df, top_n=30)
         if not sponsor_year.empty:
             fig_sponsor_trend = px.line(
                 sponsor_year,
@@ -759,7 +760,7 @@ def create_plots(
                 y='count',
                 color='lead_sponsor',
                 markers=True,
-                title='New Clinical Trials per Year by Top 5 Sponsors',
+                title='New Clinical Trials per Year by Top 30 Sponsors',
                 labels={'year': 'Year', 'count': 'Number of New Trials', 'lead_sponsor': 'Sponsor'},
             )
             fig_sponsor_trend.update_layout(
@@ -788,7 +789,7 @@ def create_plots(
     
     # Add: Sankey chart (Plotly)
     try:
-        sankey_df, top_sponsors, top_modalities, top_targets = generate_sankey_data(df, top_n=5)
+        sankey_df, top_sponsors, top_modalities, top_targets = generate_sankey_data(df, top_n=30)
         if sankey_df is not None and not sankey_df.empty:
             # Build node list
             sponsor_nodes = list(top_sponsors)
@@ -827,7 +828,7 @@ def create_plots(
                 link=link
             )])
             fig_sankey.update_layout(
-                title_text="Sponsor → Modality → Target Relationships (Top 5 Each)",
+                title_text="Sponsor → Modality → Target Relationships (Top 30 Each)",
                 font_size=12,
                 height=700
             )
@@ -920,11 +921,11 @@ def generate_static_matplotlib_plots(
             if not modality_counts.empty:
                 # Filter out "Unknown" and sort by count
                 modality_counts = modality_counts[modality_counts["modality"] != "unknown"]
-                modality_counts = modality_counts.sort_values("count", ascending=False).head(10)
+                modality_counts = modality_counts.sort_values("count", ascending=False).head(30)
                 
                 plt.figure(figsize=(10, 6))
                 bars = plt.bar(modality_counts["modality"], modality_counts["count"])
-                plt.title("Top Modalities in Clinical Trials")
+                plt.title("Top 30 Modalities in Clinical Trials")
                 plt.xlabel("Modality")
                 plt.ylabel("Number of Trials")
                 plt.xticks(rotation=45, ha="right")
@@ -984,7 +985,7 @@ def generate_static_matplotlib_plots(
                 bars = plt.barh(
                     target_counts["target"][::-1], target_counts["count"][::-1]
                 )  # Reverse order for better visualization
-                plt.title("Top Protein Targets in Clinical Trials")
+                plt.title("Top 30 Protein Targets in Clinical Trials")
                 plt.xlabel("Number of Trials")
                 plt.ylabel("Target")
                 plt.figtext(0.5, 0.01, caption, ha="center", fontsize=9)
@@ -1000,19 +1001,19 @@ def generate_static_matplotlib_plots(
         logger.error(f"Error creating top targets plot: {e}")
     
     # Add new static plots
-    plot_top_sponsors(df, output_dir, top_n=10, timestamp=timestamp)
+    plot_top_sponsors(df, output_dir, top_n=30, timestamp=timestamp)
     plot_status_distribution(df, output_dir, timestamp=timestamp)
-    plot_enrollment_by_sponsor(df, output_dir, top_n=5, timestamp=timestamp)
+    plot_enrollment_by_sponsor(df, output_dir, top_n=30, timestamp=timestamp)
     
     # Add: Sponsor activity over time (matplotlib)
     try:
-        sponsor_year = generate_sponsor_activity_over_time(df, top_n=5)
+        sponsor_year = generate_sponsor_activity_over_time(df, top_n=30)
         if not sponsor_year.empty:
             plt.figure(figsize=(12, 7))
             for sponsor in sponsor_year['lead_sponsor'].unique():
                 data = sponsor_year[sponsor_year['lead_sponsor'] == sponsor]
                 plt.plot(data['year'], data['count'], marker='o', label=sponsor)
-            plt.title('New Clinical Trials per Year by Top 5 Sponsors')
+            plt.title('New Clinical Trials per Year by Top 30 Sponsors')
             plt.xlabel('Year')
             plt.ylabel('Number of New Trials')
             plt.legend(title='Sponsor', bbox_to_anchor=(1.05, 1), loc='upper left')
@@ -1411,15 +1412,15 @@ def generate_llm_insights(df: pd.DataFrame, top_primary_clusters=None, top_secon
     stats_native = convert_to_native(stats)
     # --- END NEW ---
     # Top sponsors
-    top_sponsors = df['lead_sponsor'].value_counts().head(5).to_dict() if 'lead_sponsor' in df.columns else {}
+    top_sponsors = df['lead_sponsor'].value_counts().head(30).to_dict() if 'lead_sponsor' in df.columns else {}
     # Top modalities
     modalities = []
     if 'modalities' in df.columns:
-        modalities = pd.Series([m for sublist in df['modalities'].dropna() for m in (sublist if isinstance(sublist, list) else [sublist])]).value_counts().head(5).to_dict()
+        modalities = pd.Series([m for sublist in df['modalities'].dropna() for m in (sublist if isinstance(sublist, list) else [sublist])]).value_counts().head(30).to_dict()
     # Top targets
     targets = []
     if 'targets' in df.columns:
-        targets = pd.Series([t for sublist in df['targets'].dropna() for t in (sublist if isinstance(sublist, list) else [sublist])]).value_counts().head(5).to_dict()
+        targets = pd.Series([t for sublist in df['targets'].dropna() for t in (sublist if isinstance(sublist, list) else [sublist])]).value_counts().head(30).to_dict()
     # Yearly trend
     yearly_counts = df['start_date'].dropna().apply(get_year_from_date).value_counts().sort_index().to_dict() if 'start_date' in df.columns else {}
     # --- NEW: Add context from environment variables ---
