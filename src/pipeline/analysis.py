@@ -17,10 +17,13 @@ import pandas as pd
 import plotly.express as px
 from plotly.graph_objects import Figure as PlotlyFigure
 import plotly.graph_objects as go
+import re
+from collections import Counter, defaultdict
 
 
 from src.pipeline.config import settings
 from src.pipeline.utils import get_timestamp, log_execution_time, logger
+from src.pipeline.gemini_utils import cluster_outcomes_with_gemini, categorize_primary_and_secondary_outcomes_with_gemini
 
 
 def get_year_from_date(date_str: Optional[str]) -> Optional[int]:
@@ -61,8 +64,10 @@ def generate_summary_statistics(
     
     # Make sure required columns exist to prevent KeyError
     if 'overall_status' in df.columns:
-        stats["completed_trials"] = df[df["overall_status"] == "Completed"].shape[0]
-        stats["ongoing_trials"] = df[df["overall_status"].isin(["Recruiting", "Active, not recruiting"])].shape[0]
+        status_col = df['overall_status'].astype(str).str.strip().str.lower()
+        logger.info(f"Unique overall_status values: {status_col.unique()}")
+        stats["completed_trials"] = (status_col == "completed").sum()
+        stats["ongoing_trials"] = status_col.isin(["recruiting", "active, not recruiting"]).sum()
     else:
         logger.warning("Column 'overall_status' not found in DataFrame. Using zeros for status counts.")
         stats["completed_trials"] = 0
@@ -138,30 +143,34 @@ def generate_summary_statistics(
 def generate_modality_counts(
     df: pd.DataFrame,
 ) -> pd.DataFrame:
-    """Generate counts of trials by modality (case-insensitive)."""
+    """Generate counts of trials by modality (case-insensitive), excluding placebo and unknown."""
     logger.info("Generating modality counts")
     exploded_df = df.explode("modalities")
     # Standardize case
     if 'modalities' in exploded_df.columns:
         exploded_df["modalities"] = exploded_df["modalities"].str.lower()
+    # Exclude placebo and unknown
     modality_counts = exploded_df["modalities"].value_counts().reset_index()
     modality_counts.columns = ["modality", "count"]
+    modality_counts = modality_counts[~modality_counts["modality"].isin(["unknown", "placebo"])]
+    modality_counts = modality_counts.sort_values("count", ascending=False).head(30)
     return modality_counts
 
 
 def generate_target_counts(
     df: pd.DataFrame,
 ) -> pd.DataFrame:
-    """Generate counts of trials by target (case-insensitive)."""
+    """Generate counts of trials by target (case-insensitive), excluding placebo and unknown."""
     logger.info("Generating target counts")
     exploded_df = df.explode("targets")
     # Standardize case
     if 'targets' in exploded_df.columns:
         exploded_df["targets"] = exploded_df["targets"].str.lower()
+    # Exclude placebo and unknown
     target_counts = exploded_df["targets"].value_counts().reset_index()
     target_counts.columns = ["target", "count"]
-    target_counts = target_counts[target_counts["target"] != "unknown"]
-    target_counts = target_counts.head(20)
+    target_counts = target_counts[~target_counts["target"].isin(["unknown", "placebo"])]
+    target_counts = target_counts.head(30)
     return target_counts
 
 
@@ -212,7 +221,7 @@ def generate_yearly_modality_data(
     return pivot_df
 
 
-def generate_sponsor_activity_over_time(df: pd.DataFrame, top_n: int = 5) -> pd.DataFrame:
+def generate_sponsor_activity_over_time(df: pd.DataFrame, top_n: int = 30) -> pd.DataFrame:
     """Generate a DataFrame showing the number of new trials per year for top sponsors."""
     if 'lead_sponsor' not in df.columns or 'start_date' not in df.columns:
         return pd.DataFrame()
@@ -228,7 +237,7 @@ def generate_sponsor_activity_over_time(df: pd.DataFrame, top_n: int = 5) -> pd.
     return sponsor_year
 
 
-def plot_top_sponsors(df: pd.DataFrame, output_dir: Optional[Path] = None, top_n: int = 10, timestamp: Optional[str] = None):
+def plot_top_sponsors(df: pd.DataFrame, output_dir: Optional[Path] = None, top_n: int = 30, timestamp: Optional[str] = None):
     """Bar chart of top sponsors by number of trials."""
     if 'lead_sponsor' not in df.columns or df['lead_sponsor'].dropna().empty:
         logger.warning("'lead_sponsor' column missing or empty, skipping top sponsors plot.")
@@ -270,8 +279,8 @@ def plot_status_distribution(df: pd.DataFrame, output_dir: Optional[Path] = None
     plt.close()
 
 
-def plot_enrollment_by_sponsor(df: pd.DataFrame, output_dir: Optional[Path] = None, top_n: int = 5, timestamp: Optional[str] = None):
-    """Boxplot of enrollment sizes by top sponsors."""
+def plot_enrollment_by_sponsor_plotly(df, output_dir=None, top_n=30, timestamp=None):
+    """Interactive horizontal boxplot of enrollment sizes by top sponsors (Plotly HTML only)."""
     if 'lead_sponsor' not in df.columns or 'enrollment_count' not in df.columns:
         logger.warning("'lead_sponsor' or 'enrollment_count' column missing, skipping enrollment by sponsor plot.")
         return
@@ -285,18 +294,28 @@ def plot_enrollment_by_sponsor(df: pd.DataFrame, output_dir: Optional[Path] = No
     if filtered.empty:
         logger.warning("No data for enrollment by sponsor plot after filtering.")
         return
-    plt.figure(figsize=(10, 6))
-    filtered.boxplot(column='enrollment_count', by='lead_sponsor', grid=False)
-    plt.title(f"Enrollment Size by Top {top_n} Sponsors")
-    plt.suptitle("")
-    plt.xlabel("Sponsor")
-    plt.ylabel("Enrollment Count")
-    plt.tight_layout()
-    plt.savefig(output_dir / f"enrollment_by_top_{top_n}_sponsors_{timestamp}.png", dpi=300)
-    plt.close()
+    # Sort sponsors by median enrollment for better visual order
+    sponsor_order = (
+        filtered.groupby('lead_sponsor')['enrollment_count']
+        .median()
+        .sort_values(ascending=False)
+        .index.tolist()
+    )
+    fig = px.box(
+        filtered,
+        y='lead_sponsor',
+        x='enrollment_count',
+        orientation='h',
+        category_orders={'lead_sponsor': sponsor_order},
+        title=f'Enrollment Size by Top {top_n} Sponsors',
+        labels={'lead_sponsor': 'Sponsor', 'enrollment_count': 'Enrollment Count'},
+        height=40 * len(sponsor_order) + 200  # Dynamic height for readability
+    )
+    fig.update_layout(yaxis_title="Sponsor", xaxis_title="Enrollment Count")
+    fig.write_html(output_dir / f"enrollment_by_top_{top_n}_sponsors_{timestamp}.html")
 
 
-def generate_sankey_data(df: pd.DataFrame, top_n: int = 5):
+def generate_sankey_data(df: pd.DataFrame, top_n: int = 30):
     """Prepare data for a Sankey diagram: Sponsor -> Modality -> Target."""
     if not all(col in df.columns for col in ['lead_sponsor', 'modalities', 'targets']):
         return None, None, None
@@ -320,6 +339,123 @@ def generate_sankey_data(df: pd.DataFrame, top_n: int = 5):
         sankey_df['target'].isin(top_targets)
     ]
     return sankey_df, top_sponsors, top_modalities, top_targets
+
+
+def normalize_outcome_text(text):
+    if not isinstance(text, str):
+        return ""
+    # Lowercase, remove punctuation, strip whitespace
+    text = text.lower()
+    text = re.sub(r"[\W_]+", " ", text)  # Remove punctuation
+    text = text.strip()
+    return text
+
+
+def plot_top_outcomes_normalized(df: pd.DataFrame, outcome_col: str, title: str, top_n: int = 10):
+    """Horizontal bar chart of top N normalized outcome measures (primary or secondary), excluding placebo."""
+    # Flatten and normalize the list of outcomes
+    all_outcomes = [normalize_outcome_text(item) for sublist in df[outcome_col].dropna() for item in (sublist if isinstance(sublist, list) else [sublist])]
+    all_outcomes = [x for x in all_outcomes if x and x != "placebo"]
+    if not all_outcomes:
+        return None
+    outcome_counts = Counter(all_outcomes).most_common(top_n)
+    outcome_df = pd.DataFrame(outcome_counts, columns=["Outcome Measure", "Count"])
+    fig = px.bar(
+        outcome_df,
+        x="Count",
+        y="Outcome Measure",
+        orientation="h",
+        title=title + " (Normalized)",
+        labels={"Outcome Measure": "Outcome Measure", "Count": "Count"},
+    )
+    fig.update_layout(height=500, yaxis={'categoryorder':'total ascending'})
+    return fig
+
+
+def plot_age_distribution(df: pd.DataFrame):
+    """Boxplot and histogram for minimum and maximum age (in years)."""
+    age_df = df[['minimum_age', 'maximum_age']].copy()
+    # Melt for boxplot
+    melted = age_df.melt(var_name='Age Type', value_name='Age (years)')
+    melted = melted.dropna(subset=['Age (years)'])
+    if melted.empty:
+        return None, None
+    box = px.box(melted, x='Age Type', y='Age (years)', title='Age Distribution (Boxplot)')
+    hist = px.histogram(melted, x='Age (years)', color='Age Type', barmode='overlay', nbins=20, title='Age Distribution (Histogram)')
+    return box, hist
+
+
+def plot_age_group_distribution(df: pd.DataFrame):
+    """Bar chart for age group (categorical) distribution."""
+    if 'age_groups' not in df.columns:
+        return None
+    # Explode the list of age groups for counting
+    exploded = df.explode('age_groups')
+    group_counts = exploded['age_groups'].value_counts().reset_index()
+    group_counts.columns = ['Age Group', 'Count']
+    if group_counts.empty:
+        return None
+    fig = px.bar(
+        group_counts,
+        x='Age Group',
+        y='Count',
+        title='Distribution of Age Groups in Trials',
+        labels={'Age Group': 'Age Group', 'Count': 'Number of Trials'},
+    )
+    fig.update_layout(xaxis_tickangle=-30, height=500)
+    return fig
+
+
+def plot_modality_by_phase_distribution(df: pd.DataFrame, output_dir: Path, timestamp: str):
+    """
+    Create a stacked bar chart: X=Trial Phase, Y=Count of Trials, Color=Modality.
+    """
+    if 'study_phase' not in df.columns or 'modalities' not in df.columns:
+        logger.warning("Cannot create modality-by-phase chart: missing columns.")
+        return
+    exploded = df.explode('modalities')
+    exploded = exploded.dropna(subset=['study_phase', 'modalities'])
+    if exploded.empty:
+        logger.warning("No data for modality-by-phase chart after filtering.")
+        return
+    # Normalize phase values
+    def map_phase(phase):
+        if not isinstance(phase, str):
+            return "Other"
+        p = phase.strip().upper()
+        mapping = {
+            "PHASE1": "Phase 1",
+            "PHASE2": "Phase 2",
+            "PHASE3": "Phase 3",
+            "PHASE4": "Phase 4",
+            "PHASE1/PHASE2": "Phase 1/2",
+            "PHASE2/PHASE3": "Phase 2/3",
+            "PHASE1/PHASE2/PHASE3": "Phase 1/2/3",
+            "NOT APPLICABLE": "N/A",
+            "N/A": "N/A",
+            "EARLY PHASE 1": "Early Phase 1",
+        }
+        return mapping.get(p, "Other")
+    exploded['study_phase'] = exploded['study_phase'].map(map_phase)
+    # Lowercase and clean modalities
+    exploded['modalities'] = exploded['modalities'].str.lower().str.strip()
+    exploded = exploded[exploded['modalities'] != "unknown"]
+    grouped = exploded.groupby(['study_phase', 'modalities']).size().reset_index(name='count')
+    phase_order = [
+        'Phase 1', 'Phase 1/2', 'Phase 2', 'Phase 2/3', 'Phase 3', 'Phase 4', 'N/A', 'Early Phase 1', 'Other', 'Phase 1/2/3'
+    ]
+    grouped['study_phase'] = pd.Categorical(grouped['study_phase'], categories=phase_order, ordered=True)
+    fig = px.bar(
+        grouped,
+        x='study_phase',
+        y='count',
+        color='modalities',
+        title='Modality-by-Phase Distribution of Clinical Trials',
+        labels={'study_phase': 'Trial Phase', 'count': 'Number of Trials', 'modalities': 'Modality'},
+        category_orders={'study_phase': phase_order}
+    )
+    fig.update_layout(barmode='stack', height=600)
+    fig.write_html(output_dir / f"modality_by_phase_distribution_{timestamp}.html")
 
 
 @log_execution_time
@@ -351,6 +487,13 @@ def create_plots(
     if df.empty:
         logger.warning("Cannot create plots: DataFrame is empty")
         return plots
+    
+    # --- NEW: Modality-by-Phase Distribution Chart ---
+    try:
+        plot_modality_by_phase_distribution(df, output_dir, timestamp)
+    except Exception as e:
+        logger.error(f"Error creating modality-by-phase distribution chart: {e}")
+    # --- END NEW ---
     
     # 1. Stacked area chart of modality shares over time
     try:
@@ -408,25 +551,27 @@ def create_plots(
             duration_data = df.dropna(subset=["duration_days", "study_phase"]).copy()
             
             if not duration_data.empty:
-                # Simplify phases for better visualization
-                phase_mapping = {
-                    "Phase 1": "Phase 1",
-                    "Phase 1/Phase 2": "Phase 1/2",
-                    "Phase 2": "Phase 2",
-                    "Phase 2/Phase 3": "Phase 2/3",
-                    "Phase 3": "Phase 3",
-                    "Phase 4": "Phase 4",
-                    "Not Applicable": "N/A",
-                }
-                
-                # Apply simplified phases
-                duration_data["simplified_phase"] = duration_data["study_phase"].map(
-                    lambda x: phase_mapping.get(x, "Other")
-                )
-                
+                # --- UPDATED phase mapping for uppercase and variants ---
+                def map_phase(phase):
+                    if not isinstance(phase, str):
+                        return "Other"
+                    p = phase.strip().upper()
+                    mapping = {
+                        "PHASE1": "Phase 1",
+                        "PHASE2": "Phase 2",
+                        "PHASE3": "Phase 3",
+                        "PHASE4": "Phase 4",
+                        "PHASE1/PHASE2": "Phase 1/2",
+                        "PHASE2/PHASE3": "Phase 2/3",
+                        "PHASE1/PHASE2/PHASE3": "Phase 1/2/3",
+                        "NOT APPLICABLE": "N/A",
+                        "N/A": "N/A",
+                        "EARLY PHASE 1": "Early Phase 1",
+                    }
+                    return mapping.get(p, "Other")
+                duration_data["simplified_phase"] = duration_data["study_phase"].map(map_phase)
                 # Order phases logically
-                phase_order = ["Phase 1", "Phase 1/2", "Phase 2", "Phase 2/3", "Phase 3", "Phase 4", "N/A", "Other"]
-                
+                phase_order = ["Phase 1", "Phase 1/2", "Phase 2", "Phase 2/3", "Phase 3", "Phase 4", "N/A", "Early Phase 1", "Other", "Phase 1/2/3"]
                 # Create boxplot
                 fig_duration = px.box(
                     duration_data,
@@ -512,13 +657,13 @@ def create_plots(
     # Add: Top Sponsors (Plotly)
     try:
         if 'lead_sponsor' in df.columns and not df['lead_sponsor'].dropna().empty:
-            sponsor_counts = df['lead_sponsor'].value_counts().head(10).reset_index()
+            sponsor_counts = df['lead_sponsor'].value_counts().head(30).reset_index()
             sponsor_counts.columns = ['sponsor', 'count']
             fig_sponsors = px.bar(
                 sponsor_counts,
                 x='sponsor',
                 y='count',
-                title='Top 10 Sponsors by Number of Trials',
+                title='Top 30 Sponsors by Number of Trials',
                 labels={'sponsor': 'Sponsor', 'count': 'Number of Trials'},
             )
             fig_sponsors.update_layout(
@@ -545,82 +690,9 @@ def create_plots(
     except Exception as e:
         logger.error(f"Error creating top sponsors plot: {e}")
 
-    # Add: Status Distribution (Plotly)
-    try:
-        if 'overall_status' in df.columns and not df['overall_status'].dropna().empty:
-            status_counts = df['overall_status'].value_counts().reset_index()
-            status_counts.columns = ['status', 'count']
-            fig_status = px.pie(
-                status_counts,
-                names='status',
-                values='count',
-                title='Trial Status Distribution',
-            )
-            fig_status.update_layout(
-                autosize=True,
-                height=600,
-                annotations=[
-                    dict(
-                        text=caption,
-                        showarrow=False,
-                        xref="paper",
-                        yref="paper",
-                        x=0.5,
-                        y=-0.15,
-                        font=dict(size=10),
-                    )
-                ],
-            )
-            plots["status_distribution"] = fig_status
-            # Save as HTML only (static image export removed due to Kaleido dependency)
-            fig_status.write_html(output_dir / f"status_distribution_{timestamp}.html")
-        else:
-            logger.warning("Skipping status distribution plot: 'overall_status' column missing or empty.")
-    except Exception as e:
-        logger.error(f"Error creating status distribution plot: {e}")
-
-    # Add: Enrollment by Sponsor (Plotly)
-    try:
-        if 'lead_sponsor' in df.columns and 'enrollment_count' in df.columns:
-            top_sponsors = df['lead_sponsor'].value_counts().head(5).index
-            filtered = df[df['lead_sponsor'].isin(top_sponsors) & df['enrollment_count'].notna()]
-            if not filtered.empty:
-                fig_enroll_sponsor = px.box(
-                    filtered,
-                    x='lead_sponsor',
-                    y='enrollment_count',
-                    title='Enrollment Size by Top 5 Sponsors',
-                    labels={'lead_sponsor': 'Sponsor', 'enrollment_count': 'Enrollment Count'},
-                )
-                fig_enroll_sponsor.update_layout(
-                    autosize=True,
-                    height=600,
-                    xaxis_tickangle=-45,
-                    annotations=[
-                        dict(
-                            text=caption,
-                            showarrow=False,
-                            xref="paper",
-                            yref="paper",
-                            x=0.5,
-                            y=-0.15,
-                            font=dict(size=10),
-                        )
-                    ],
-                )
-                plots["enrollment_by_sponsor"] = fig_enroll_sponsor
-                # Save as HTML only (static image export removed due to Kaleido dependency)
-                fig_enroll_sponsor.write_html(output_dir / f"enrollment_by_sponsor_{timestamp}.html")
-            else:
-                logger.warning("No data for enrollment by sponsor plot after filtering.")
-        else:
-            logger.warning("Skipping enrollment by sponsor plot: 'lead_sponsor' or 'enrollment_count' column missing.")
-    except Exception as e:
-        logger.error(f"Error creating enrollment by sponsor plot: {e}")
-    
     # Add: Sponsor activity over time (Plotly)
     try:
-        sponsor_year = generate_sponsor_activity_over_time(df, top_n=5)
+        sponsor_year = generate_sponsor_activity_over_time(df, top_n=30)
         if not sponsor_year.empty:
             fig_sponsor_trend = px.line(
                 sponsor_year,
@@ -628,7 +700,7 @@ def create_plots(
                 y='count',
                 color='lead_sponsor',
                 markers=True,
-                title='New Clinical Trials per Year by Top 5 Sponsors',
+                title='New Clinical Trials per Year by Top 30 Sponsors',
                 labels={'year': 'Year', 'count': 'Number of New Trials', 'lead_sponsor': 'Sponsor'},
             )
             fig_sponsor_trend.update_layout(
@@ -657,7 +729,7 @@ def create_plots(
     
     # Add: Sankey chart (Plotly)
     try:
-        sankey_df, top_sponsors, top_modalities, top_targets = generate_sankey_data(df, top_n=5)
+        sankey_df, top_sponsors, top_modalities, top_targets = generate_sankey_data(df, top_n=30)
         if sankey_df is not None and not sankey_df.empty:
             # Build node list
             sponsor_nodes = list(top_sponsors)
@@ -696,7 +768,7 @@ def create_plots(
                 link=link
             )])
             fig_sankey.update_layout(
-                title_text="Sponsor → Modality → Target Relationships (Top 5 Each)",
+                title_text="Sponsor → Modality → Target Relationships (Top 30 Each)",
                 font_size=12,
                 height=700
             )
@@ -707,6 +779,46 @@ def create_plots(
             logger.warning("Skipping Sankey plot: insufficient data")
     except Exception as e:
         logger.error(f"Error creating Sankey plot: {e}")
+    
+    # Add: Top Primary Outcomes (normalized)
+    try:
+        if 'primary_outcomes' in df.columns:
+            fig_primary_norm = plot_top_outcomes_normalized(df, 'primary_outcomes', 'Top Primary Outcome Measures')
+            if fig_primary_norm:
+                plots['top_primary_outcomes_normalized'] = fig_primary_norm
+    except Exception as e:
+        logger.error(f"Error creating normalized primary outcomes plot: {e}")
+    # Add: Top Secondary Outcomes (normalized)
+    try:
+        if 'secondary_outcomes' in df.columns:
+            fig_secondary_norm = plot_top_outcomes_normalized(df, 'secondary_outcomes', 'Top Secondary Outcome Measures')
+            if fig_secondary_norm:
+                plots['top_secondary_outcomes_normalized'] = fig_secondary_norm
+    except Exception as e:
+        logger.error(f"Error creating normalized secondary outcomes plot: {e}")
+    # Add: Age Distribution
+    try:
+        if 'minimum_age' in df.columns and 'maximum_age' in df.columns:
+            fig_age_box, fig_age_hist = plot_age_distribution(df)
+            if fig_age_box:
+                plots['age_boxplot'] = fig_age_box
+    except Exception as e:
+        logger.error(f"Error creating age distribution plots: {e}")
+    
+    # Add: Age Group Distribution (categorical)
+    try:
+        if 'age_groups' in df.columns:
+            fig_age_group = plot_age_group_distribution(df)
+            if fig_age_group:
+                plots['age_group_distribution'] = fig_age_group
+    except Exception as e:
+        logger.error(f"Error creating age group distribution plot: {e}")
+    
+    # Add: Enrollment by Sponsor (Plotly HTML only)
+    try:
+        plot_enrollment_by_sponsor_plotly(df, output_dir, top_n=30, timestamp=timestamp)
+    except Exception as e:
+        logger.error(f"Error creating enrollment by sponsor plot: {e}")
     
     logger.info(f"Created {len(plots)} plots")
     return plots
@@ -745,11 +857,11 @@ def generate_static_matplotlib_plots(
             if not modality_counts.empty:
                 # Filter out "Unknown" and sort by count
                 modality_counts = modality_counts[modality_counts["modality"] != "unknown"]
-                modality_counts = modality_counts.sort_values("count", ascending=False).head(10)
+                modality_counts = modality_counts.sort_values("count", ascending=False).head(30)
                 
                 plt.figure(figsize=(10, 6))
                 bars = plt.bar(modality_counts["modality"], modality_counts["count"])
-                plt.title("Top Modalities in Clinical Trials")
+                plt.title("Top 30 Modalities in Clinical Trials")
                 plt.xlabel("Modality")
                 plt.ylabel("Number of Trials")
                 plt.xticks(rotation=45, ha="right")
@@ -809,7 +921,7 @@ def generate_static_matplotlib_plots(
                 bars = plt.barh(
                     target_counts["target"][::-1], target_counts["count"][::-1]
                 )  # Reverse order for better visualization
-                plt.title("Top Protein Targets in Clinical Trials")
+                plt.title("Top 30 Protein Targets in Clinical Trials")
                 plt.xlabel("Number of Trials")
                 plt.ylabel("Target")
                 plt.figtext(0.5, 0.01, caption, ha="center", fontsize=9)
@@ -825,95 +937,10 @@ def generate_static_matplotlib_plots(
         logger.error(f"Error creating top targets plot: {e}")
     
     # Add new static plots
-    plot_top_sponsors(df, output_dir, top_n=10, timestamp=timestamp)
+    plot_top_sponsors(df, output_dir, top_n=30, timestamp=timestamp)
     plot_status_distribution(df, output_dir, timestamp=timestamp)
-    plot_enrollment_by_sponsor(df, output_dir, top_n=5, timestamp=timestamp)
-    
-    # Add: Sponsor activity over time (matplotlib)
-    try:
-        sponsor_year = generate_sponsor_activity_over_time(df, top_n=5)
-        if not sponsor_year.empty:
-            plt.figure(figsize=(12, 7))
-            for sponsor in sponsor_year['lead_sponsor'].unique():
-                data = sponsor_year[sponsor_year['lead_sponsor'] == sponsor]
-                plt.plot(data['year'], data['count'], marker='o', label=sponsor)
-            plt.title('New Clinical Trials per Year by Top 5 Sponsors')
-            plt.xlabel('Year')
-            plt.ylabel('Number of New Trials')
-            plt.legend(title='Sponsor', bbox_to_anchor=(1.05, 1), loc='upper left')
-            plt.tight_layout()
-            plt.savefig(output_dir / f"sponsor_activity_over_time_{timestamp}.png", dpi=300)
-            plt.close()
-        else:
-            logger.warning("Skipping sponsor activity over time static plot: insufficient data")
-    except Exception as e:
-        logger.error(f"Error creating sponsor activity over time static plot: {e}")
     
     logger.info("Static plots generated")
-
-
-def generate_llm_insights(df: pd.DataFrame) -> str:
-    """
-    Generate a detailed insights report using Gemini LLM, summarizing key statistics, trends, and findings from the clinical trials data.
-    Falls back to manual bullet points if LLM call fails.
-    """
-    import json
-    from llm_module import generate_pipeline_insights
-
-    if df.empty:
-        return "No clinical trials data available for insights generation."
-
-    # Prepare summary statistics
-    stats = generate_summary_statistics(df)
-    # Top sponsors
-    top_sponsors = df['lead_sponsor'].value_counts().head(5).to_dict() if 'lead_sponsor' in df.columns else {}
-    # Top modalities
-    modalities = []
-    if 'modalities' in df.columns:
-        modalities = pd.Series([m for sublist in df['modalities'].dropna() for m in (sublist if isinstance(sublist, list) else [sublist])]).value_counts().head(5).to_dict()
-    # Top targets
-    targets = []
-    if 'targets' in df.columns:
-        targets = pd.Series([t for sublist in df['targets'].dropna() for t in (sublist if isinstance(sublist, list) else [sublist])]).value_counts().head(5).to_dict()
-    # Yearly trend
-    yearly_counts = df['start_date'].dropna().apply(get_year_from_date).value_counts().sort_index().to_dict() if 'start_date' in df.columns else {}
-
-    # Compose a detailed prompt
-    prompt = f"""
-You are an expert biotech analyst. Analyze the following clinical trials data and generate a detailed, insightful report for a hedge fund or investor audience. Highlight trends, sponsor activity, therapeutic focus, and any notable findings.
-
-Key statistics:
-{json.dumps(stats, indent=2)}
-
-Top sponsors (by number of trials):
-{json.dumps(top_sponsors, indent=2)}
-
-Top modalities (by number of trials):
-{json.dumps(modalities, indent=2)}
-
-Top targets (by number of trials):
-{json.dumps(targets, indent=2)}
-
-Number of new trials started per year:
-{json.dumps(yearly_counts, indent=2)}
-
-If possible, also:
-- Identify any emerging trends or shifts in research focus
-- Comment on the distribution of trial phases and enrollment sizes
-- Note any sponsors with increasing or decreasing activity
-- Suggest potential strategic priorities or risks
-
-Format your response in markdown with clear sections and bullet points where appropriate.
-"""
-
-    try:
-        llm_report = generate_pipeline_insights(prompt)
-        if llm_report and isinstance(llm_report, str):
-            return llm_report
-        else:
-            return "[LLM did not return a valid report. Please check the LLM integration.]"
-    except Exception as e:
-        return f"[LLM insights generation failed: {str(e)}]"
 
 
 @log_execution_time
@@ -995,6 +1022,67 @@ def analyze_trials(
             "phase_counts": {}
         }
     
+    # --- NEW: Quantitative summary extraction and visualizations ---
+    output_dir = settings.paths.figures
+    if timestamp is None:
+        timestamp = get_timestamp()
+    # Age
+    if 'minimum_age' in df.columns and 'maximum_age' in df.columns:
+        plot_age_quartiles_box(df, output_dir, timestamp)
+    plot_enrollment_quartiles_box(df, output_dir, timestamp)
+    # Outcomes
+    # No LLM-based clustering or canonicalization; just keep the raw outcomes
+    primary_cluster_mapping = None
+    secondary_cluster_mapping = None
+    # --- END NEW ---
+
+    # Restore summary variables for markdown
+    modalities = get_unique_flat_list(df, 'modalities') if 'modalities' in df.columns else []
+    targets = get_unique_flat_list(df, 'targets') if 'targets' in df.columns else []
+    sponsors = get_unique_sponsors(df)
+    def _flatten_outcomes(df, col):
+        outcomes = set()
+        for val in df[col].dropna():
+            if isinstance(val, list):
+                for o in val:
+                    if isinstance(o, dict) and o.get('measure'):
+                        outcomes.add(o['measure'])
+                    elif isinstance(o, str):
+                        outcomes.add(o)
+            elif isinstance(val, dict) and val.get('measure'):
+                outcomes.add(val['measure'])
+            elif isinstance(val, str):
+                outcomes.add(val)
+        return sorted(outcomes)
+    primary_outcomes = _flatten_outcomes(df, 'primary_outcomes') if 'primary_outcomes' in df.columns else []
+    secondary_outcomes = _flatten_outcomes(df, 'secondary_outcomes') if 'secondary_outcomes' in df.columns else []
+    # --- END NEW ---
+
+    # Categorize outcomes with Gemini (now using combined function)
+    categorized_outcomes = categorize_primary_and_secondary_outcomes_with_gemini(primary_outcomes, secondary_outcomes)
+    # Grouped bar plot for categories (primary vs secondary)
+    if categorized_outcomes:
+        df_cat = pd.DataFrame(categorized_outcomes)
+        if not df_cat.empty:
+            counts = df_cat.groupby(['category', 'type']).size().reset_index(name='count')
+            fig_cat = px.bar(
+                counts,
+                x='category',
+                y='count',
+                color='type',
+                barmode='group',
+                labels={'category': 'Category', 'count': 'Count', 'type': 'Outcome Type'},
+                title='Primary and Secondary Outcomes by Category (Grouped)'
+            )
+            fig_cat.write_html(settings.paths.figures / f"outcomes_by_category_grouped_{timestamp}.html")
+    # Group categorized outcomes for LLM insights
+    def group_outcomes_by_category(categorized_outcomes):
+        grouped = defaultdict(lambda: defaultdict(list))
+        for item in categorized_outcomes:
+            grouped[item['type']][item['category']].append(item['outcome'])
+        return grouped
+    grouped_outcomes = group_outcomes_by_category(categorized_outcomes) if categorized_outcomes else None
+
     # Create plots - catch any exceptions so the pipeline doesn't fail
     try:
         plots = create_plots(df)
@@ -1008,9 +1096,33 @@ def analyze_trials(
     except Exception as e:
         logger.error(f"Error generating static plots: {e}")
     
-    # Generate insights - catch any exceptions
+    # --- NEW: Compose LLM insights section, passing top outcome clusters ---
+    def get_top_clusters(cluster_mapping, top_n=5):
+        if not cluster_mapping:
+            return []
+        # Count cluster label frequencies
+        from collections import Counter
+        labels = [v['canonical'] for v in cluster_mapping.values() if v.get('canonical')]
+        counts = Counter(labels)
+        top = counts.most_common(top_n)
+        # For each top cluster, get example outcomes
+        result = []
+        for label, count in top:
+            examples = [k for k, v in cluster_mapping.items() if v.get('canonical') == label][:3]
+            result.append({'label': label, 'count': count, 'examples': examples})
+        return result
+    top_primary_clusters = get_top_clusters(primary_cluster_mapping)
+    top_secondary_clusters = get_top_clusters(secondary_cluster_mapping)
+    # Pass these to the LLM insights generator
     try:
-        insights = generate_llm_insights(df)
+        insights = generate_llm_insights(
+            df,
+            top_primary_clusters=top_primary_clusters,
+            top_secondary_clusters=top_secondary_clusters,
+            primary_outcomes=primary_outcomes,
+            secondary_outcomes=secondary_outcomes,
+            categorized_outcomes=grouped_outcomes
+        )
     except Exception as e:
         logger.error(f"Error generating insights: {e}")
         insights = f"""
@@ -1021,33 +1133,306 @@ def analyze_trials(
         
         Error: {str(e)}
         """
-    
+    # --- END NEW ---
+
+    # --- NEW: Compose quantitative summary markdown ---
+    quantitative_md = f"""
+## Quantitative Summary (Manual)
+
+- **Number of explored modalities:** {len(modalities)}
+- **List of modalities:** {', '.join(modalities) if modalities else 'N/A'}
+- **Number of biological targets:** {len(targets)}
+- **List of targets:** {', '.join(targets) if targets else 'N/A'}
+- **Number of sponsors:** {len(sponsors)}
+- **List of sponsors:** {', '.join(sponsors) if sponsors else 'N/A'}
+"""
+    if 'minimum_age' in df.columns:
+        min_age_quartiles = get_age_quartiles(df, 'minimum_age')
+        if min_age_quartiles:
+            quantitative_md += f"""
+- **Minimum Age (years):** min={min_age_quartiles['min']:.2f}, Q1={min_age_quartiles['q1']:.2f}, median={min_age_quartiles['median']:.2f}, Q3={min_age_quartiles['q3']:.2f}, max={min_age_quartiles['max']:.2f}, mean={min_age_quartiles['mean']:.2f} (n={min_age_quartiles['count']})
+"""
+    if 'maximum_age' in df.columns:
+        max_age_quartiles = get_age_quartiles(df, 'maximum_age')
+        if max_age_quartiles:
+            quantitative_md += f"""
+- **Maximum Age (years):** min={max_age_quartiles['min']:.2f}, Q1={max_age_quartiles['q1']:.2f}, median={max_age_quartiles['median']:.2f}, Q3={max_age_quartiles['q3']:.2f}, max={max_age_quartiles['max']:.2f}, mean={max_age_quartiles['mean']:.2f} (n={max_age_quartiles['count']})
+"""
+    # Enrollment and duration quartiles (already in summary_stats)
+    if 'enrollment' in summary_stats:
+        e = summary_stats['enrollment']
+        quantitative_md += f"""
+- **Enrollment (number of patients):** min={e['min']:.2f}, Q1={e['q1']:.2f}, median={e['median']:.2f}, Q3={e['q3']:.2f}, max={e['max']:.2f}, mean={e['mean']:.2f}
+"""
+    if 'duration_days' in summary_stats:
+        d = summary_stats['duration_days']
+        quantitative_md += f"""
+- **Trial Duration (days):** min={d['min']:.2f}, Q1={d['q1']:.2f}, median={d['median']:.2f}, Q3={d['q3']:.2f}, max={d['max']:.2f}, mean={d['mean']:.2f}
+"""
+    # Age group (stdAges) distribution
+    if 'age_groups' in df.columns:
+        from collections import Counter
+        all_groups = [g for sublist in df['age_groups'].dropna() for g in (sublist if isinstance(sublist, list) else [sublist])]
+        group_counts = Counter(all_groups)
+        if group_counts:
+            quantitative_md += "\n- **Age group distribution:**\n"
+            for group, count in group_counts.items():
+                quantitative_md += f"    - {group}: {count} studies\n"
+    # --- END NEW ---
+
+    # Compose final insights (manual and LLM sections)
+    final_insights = quantitative_md + "\n" + insights
     # Create directories if they don't exist
     settings.paths.processed_data.mkdir(parents=True, exist_ok=True)
-    
     # Save insights to file
     insights_path = settings.paths.processed_data / f"insights_{timestamp}.md"
     with open(insights_path, "w") as f:
-        f.write(insights)
-    
-    # Save summary stats to file
-    stats_path = settings.paths.processed_data / f"stats_{timestamp}.json"
+        f.write(final_insights)
+    logger.info(f"Analysis completed and saved to {insights_path}")
+
+    # --- NEW: Always generate treatment details HTML table ---
+    try:
+        generate_treatment_details_table(df, settings.paths.figures, timestamp)
+    except Exception as e:
+        logger.error(f"Error generating treatment details table: {e}")
+
+    return summary_stats, final_insights
+
+
+# --- NEW: Helper functions for extracting unique lists and quartiles ---
+def get_unique_flat_list(df, col):
+    """Extract a flat set of unique items from a column of lists or lists of lists."""
+    items = set()
+    for val in df[col].dropna():
+        if isinstance(val, list):
+            for v in val:
+                if isinstance(v, list):
+                    for vv in v:
+                        items.add(vv)
+                else:
+                    items.add(v)
+        else:
+            items.add(val)
+    return sorted(items)
+
+def get_age_quartiles(df, col):
+    """Calculate quartiles, min, max, mean for an age column (in years)."""
+    import numpy as np
+    vals = pd.to_numeric(df[col], errors='coerce').dropna()
+    if vals.empty:
+        return None
+    return {
+        'min': float(vals.min()),
+        'q1': float(np.percentile(vals, 25)),
+        'median': float(np.percentile(vals, 50)),
+        'q3': float(np.percentile(vals, 75)),
+        'max': float(vals.max()),
+        'mean': float(vals.mean()),
+        'count': int(vals.count()),
+    }
+
+def get_unique_sponsors(df):
+    """Get unique sponsors from lead_sponsor and collaborators."""
+    sponsors = set(df['lead_sponsor'].dropna().unique()) if 'lead_sponsor' in df.columns else set()
+    if 'collaborators' in df.columns:
+        for val in df['collaborators'].dropna():
+            if isinstance(val, list):
+                sponsors.update(val)
+            elif isinstance(val, str):
+                sponsors.add(val)
+    return sorted(sponsors)
+
+def plot_age_quartiles_box(df, output_dir, timestamp):
+    """
+    Create a single boxplot for minimum and maximum age (in years) and save as PNG.
+    """
+    import matplotlib.pyplot as plt
+    age_df = df[['minimum_age', 'maximum_age']].copy()
+    melted = age_df.melt(var_name='Age Type', value_name='Age (years)')
+    melted = melted.dropna(subset=['Age (years)'])
+    if melted.empty:
+        return
+    plt.figure(figsize=(7, 5))
+    melted.boxplot(by='Age Type', column='Age (years)', grid=False)
+    plt.title('Age Distribution by Type (Boxplot)')
+    plt.suptitle("")
+    plt.xlabel("Age Type")
+    plt.ylabel("Age (years)")
+    plt.tight_layout()
+    plt.savefig(output_dir / f"age_quartiles_box_{timestamp}.png", dpi=300)
+    plt.close()
+
+def plot_enrollment_quartiles_box(df, output_dir, timestamp):
+    """
+    Create a single boxplot for enrollment count and save as PNG.
+    """
+    import matplotlib.pyplot as plt
+    col = 'enrollment_count' if 'enrollment_count' in df.columns else 'enrollment'
+    if col not in df.columns:
+        return
+    vals = pd.to_numeric(df[col], errors='coerce').dropna()
+    if vals.empty:
+        return
+    plt.figure(figsize=(7, 5))
+    plt.boxplot(vals, vert=False)
+    plt.title('Enrollment Distribution (Boxplot)')
+    plt.xlabel('Enrollment Count')
+    plt.tight_layout()
+    plt.savefig(output_dir / f"enrollment_quartiles_box_{timestamp}.png", dpi=300)
+    plt.close()
+
+def generate_treatment_details_table(df: pd.DataFrame, output_dir: Optional[Path] = None, timestamp: Optional[str] = None) -> Optional[Path]:
+    """Generate a structured HTML table of treatment details for all trials."""
+    if 'treatment_details' not in df.columns or df['treatment_details'].dropna().empty:
+        logger.warning("No treatment details found in DataFrame.")
+        return None
+    rows = []
+    for _, row in df.iterrows():
+        nct_id = row.get('nct_id')
+        details = row.get('treatment_details', [])
+        for d in details:
+            rows.append({
+                'NCT ID': nct_id,
+                'Intervention Name': d.get('intervention_name'),
+                'Type': d.get('intervention_type'),
+                'Arm Group': d.get('arm_group_label'),
+                'Arm Group Description': d.get('arm_group_description'),
+                'Intervention Description': d.get('intervention_description'),
+            })
+    if not rows:
+        logger.warning("No treatment details to tabulate.")
+        return None
+    table_df = pd.DataFrame(rows)
+    if output_dir is None:
+        output_dir = settings.paths.figures
+    os.makedirs(output_dir, exist_ok=True)
+    if timestamp is None:
+        timestamp = get_timestamp()
+    html_path = output_dir / f"treatment_details_{timestamp}.html"
+    table_df.to_html(html_path, index=False, escape=False)
+    logger.info(f"Saved treatment details table to {html_path}")
+    return html_path
+
+def generate_llm_insights(df: pd.DataFrame, top_primary_clusters=None, top_secondary_clusters=None, primary_outcomes=None, secondary_outcomes=None, categorized_outcomes=None) -> str:
+    """
+    Generate a detailed insights report using Gemini LLM, summarizing key statistics, trends, and findings from the clinical trials data.
+    Falls back to manual bullet points if LLM call fails.
+    """
     import json
-    with open(stats_path, "w") as f:
-        # Convert NumPy types to Python native types for JSON serialization
-        def convert_to_native(obj):
-            if isinstance(obj, (np.integer, np.int64)):
-                return int(obj)
-            elif isinstance(obj, (np.floating, np.float64)):
-                return float(obj)
-            elif isinstance(obj, np.ndarray):
-                return obj.tolist()
-            elif isinstance(obj, dict):
-                return {k: convert_to_native(v) for k, v in obj.items()}
-            return obj
-        
-        json.dump(convert_to_native(summary_stats), f, indent=2)
-    
-    logger.info(f"Analysis completed and saved to {insights_path} and {stats_path}")
-    
-    return summary_stats, insights 
+    from src.pipeline.gemini_utils import generate_pipeline_insights
+    if df.empty:
+        return "No clinical trials data available for insights generation."
+    # Prepare summary statistics
+    stats = generate_summary_statistics(df)
+    # --- NEW: Convert stats to native types for JSON serialization ---
+    def convert_to_native(obj):
+        if isinstance(obj, (np.integer, np.int64)):
+            return int(obj)
+        elif isinstance(obj, (np.floating, np.float64)):
+            return float(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        elif isinstance(obj, dict):
+            return {k: convert_to_native(v) for k, v in obj.items()}
+        return obj
+    stats_native = convert_to_native(stats)
+    # --- END NEW ---
+    # Top sponsors
+    top_sponsors = df['lead_sponsor'].value_counts().head(30).to_dict() if 'lead_sponsor' in df.columns else {}
+    # Top modalities
+    modalities = []
+    if 'modalities' in df.columns:
+        modalities = pd.Series([m for sublist in df['modalities'].dropna() for m in (sublist if isinstance(sublist, list) else [sublist])]).value_counts().head(30).to_dict()
+    # Top targets
+    targets = []
+    if 'targets' in df.columns:
+        targets = pd.Series([t for sublist in df['targets'].dropna() for t in (sublist if isinstance(sublist, list) else [sublist])]).value_counts().head(30).to_dict()
+    # Yearly trend
+    yearly_counts = df['start_date'].dropna().apply(get_year_from_date).value_counts().sort_index().to_dict() if 'start_date' in df.columns else {}
+    # --- NEW: Add context from environment variables ---
+    from src.pipeline.config import settings
+    disease = getattr(settings, 'disease', 'N/A')
+    year_start = getattr(settings, 'year_start', 'N/A')
+    year_end = getattr(settings, 'year_end', 'N/A')
+    context_section = f"""
+Clinical Trials Context:
+- Disease: {disease}
+- Start Year: {year_start}
+- End Year: {year_end}
+"""
+    # --- END NEW ---
+    # --- NEW: Add top outcome clusters and outcomes to the prompt ---
+    def format_clusters_for_prompt(clusters, label):
+        if not clusters:
+            return f"No {label} clusters found."
+        lines = [f"Top {label} Clusters:"]
+        for c in clusters:
+            lines.append(f"- {c['label']} (n={c['count']}): e.g. {', '.join(c['examples'])}")
+        return '\n'.join(lines)
+    primary_cluster_section = format_clusters_for_prompt(top_primary_clusters, 'Primary Outcome')
+    secondary_cluster_section = format_clusters_for_prompt(top_secondary_clusters, 'Secondary Outcome')
+    # --- NEW: Add categorized outcomes to the prompt ---
+    def format_categorized_section(categorized_outcomes, outcome_type):
+        if not categorized_outcomes or outcome_type not in categorized_outcomes:
+            return f"No {outcome_type} outcomes found."
+        lines = [f"### {outcome_type.capitalize()} Outcomes by Category:"]
+        for cat, outcomes in categorized_outcomes[outcome_type].items():
+            lines.append(f"- **{cat}** ({len(outcomes)}):")
+            for o in outcomes[:5]:
+                lines.append(f"    - {o}")
+            if len(outcomes) > 5:
+                lines.append(f"    ...and {len(outcomes)-5} more.")
+        return '\n'.join(lines)
+    if categorized_outcomes:
+        categorized_section = (
+            format_categorized_section(categorized_outcomes, 'primary') + '\n\n' +
+            format_categorized_section(categorized_outcomes, 'secondary')
+        )
+    else:
+        categorized_section = ""
+    # --- NEW: Add outcomes to the prompt ---
+    primary_outcomes_section = f"Top Primary Outcomes (raw):\n- " + "\n- ".join(primary_outcomes) if primary_outcomes else "No primary outcomes found."
+    secondary_outcomes_section = f"Top Secondary Outcomes (raw):\n- " + "\n- ".join(secondary_outcomes) if secondary_outcomes else "No secondary outcomes found."
+    # --- END NEW ---
+    # Compose a detailed prompt
+    prompt = f"""
+{context_section}
+You are an expert biotech analyst. Analyze the following clinical trials data and generate a detailed, insightful report for a hedge fund or investor audience. Highlight trends, sponsor activity, therapeutic focus, and any notable findings.
+
+Key statistics:
+{json.dumps(stats_native, indent=2)}
+
+Top sponsors (by number of trials):
+{json.dumps(top_sponsors, indent=2)}
+
+Top modalities (by number of trials):
+{json.dumps(modalities, indent=2)}
+
+Top targets (by number of trials):
+{json.dumps(targets, indent=2)}
+
+Number of new trials started per year:
+{json.dumps(yearly_counts, indent=2)}
+
+{categorized_section}
+
+{primary_outcomes_section}
+
+{secondary_outcomes_section}
+
+For the Primary and Secondary Outcomes analysis section, please provide a markdown table for each (primary and secondary) with the following columns:
+- Outcome Category
+- Top Outcomes (up to 5 examples)
+- Explanation (briefly describe what this category means in the context of clinical trials)
+
+Do not use bullet points for this section. Use markdown tables only. For all other sections, use markdown with clear sections and bullet points where appropriate.
+"""
+
+    try:
+        llm_report = generate_pipeline_insights(prompt)
+        if llm_report and isinstance(llm_report, str):
+            return llm_report
+        else:
+            return "[LLM did not return a valid report. Please check the LLM integration.]"
+    except Exception as e:
+        return f"[LLM insights generation failed: {str(e)}]" 

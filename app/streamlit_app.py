@@ -76,6 +76,23 @@ def main():
     with col4:
         avg_enrollment = int(df["enrollment"].mean())
         st.metric("Avg. Enrollment", avg_enrollment)
+
+    # --- New: Key Quantitative Visualizations ---
+    st.subheader("Key Quantitative Visualizations")
+    from src.pipeline.analysis import create_plots
+    plots = create_plots(df)
+    # Show top primary outcomes
+    if "top_primary_outcomes" in plots:
+        st.plotly_chart(plots["top_primary_outcomes"], use_container_width=True)
+    # Show top secondary outcomes
+    if "top_secondary_outcomes" in plots:
+        st.plotly_chart(plots["top_secondary_outcomes"], use_container_width=True)
+    # Show age boxplot
+    if "age_boxplot" in plots:
+        st.plotly_chart(plots["age_boxplot"], use_container_width=True)
+    # Show age histogram
+    if "age_histogram" in plots:
+        st.plotly_chart(plots["age_histogram"], use_container_width=True)
     
     # Display trial phases distribution
     st.header("Trial Phases")

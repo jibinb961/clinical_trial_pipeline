@@ -95,10 +95,6 @@ async def extract_clinical_trials_page(
         raise
     except json.JSONDecodeError as e:
         logger.error(f"Malformed JSON response from ClinicalTrials.gov API: {str(e)}")
-        error_path = settings.paths.raw_data / "errors"
-        error_path.mkdir(exist_ok=True)
-        with open(error_path / f"malformed_json_{get_timestamp()}.txt", "w") as f:
-            f.write(f"URL: {url}\nParams: {params}\nError: {str(e)}")
         return [], None
 
 
@@ -134,9 +130,6 @@ async def extract_all_clinical_trials(
         metadata_checked = True
         if metadata_info.get("error"):
             logger.warning("Failed to check API metadata, proceeding with extraction anyway")
-        else:
-            raw_path = get_raw_data_path(timestamp)
-            save_json(metadata_info, raw_path / "api_metadata.json")
         page_number = 1
         next_page_token = None
         while True:
@@ -149,27 +142,10 @@ async def extract_all_clinical_trials(
             studies, next_page_token = await extract_clinical_trials_page(session, url, params)
             logger.info(f"Retrieved page {page_number} with {len(studies)} studies, next_page_token: {next_page_token}")
             all_studies.extend(studies)
-            if max_studies is not None and len(all_studies) >= max_studies:
-                logger.info(f"Reached max_studies limit: {max_studies}")
-                all_studies = all_studies[:max_studies]
-                break
-            if save_raw:
-                raw_path = get_raw_data_path(timestamp)
-                save_json(
-                    {"studies": studies, "page": page_number},
-                    raw_path / f"page_{page_number}.json",
-                )
             if not next_page_token:
                 break
             page_number += 1
     logger.info(f"Extracted total of {len(all_studies)} clinical trials before filtering")
-    # Save raw extraction
-    raw_path = get_raw_data_path(timestamp)
-    raw_path.mkdir(parents=True, exist_ok=True)
-    raw_file = raw_path / f"raw_{timestamp}.json"
-    save_json({"studies": all_studies}, raw_file)
-    logger.info(f"Saved raw extracted studies to {raw_file}")
-
     # Post-process: filter by start_date, intervention, sponsor, and study type in Python
     def is_in_date_range(study):
         protocol_section = study.get("protocolSection", {})
@@ -182,7 +158,6 @@ async def extract_all_clinical_trials(
             return year_start <= year <= year_end
         except Exception:
             return False
-
     def has_drug_intervention(study):
         protocol_section = study.get("protocolSection", {})
         arms_module = protocol_section.get("armsInterventionsModule", {})
@@ -191,18 +166,15 @@ async def extract_all_clinical_trials(
             if intervention.get("type") == "DRUG":
                 return True
         return False
-
     def has_industry_sponsor(study):
         protocol_section = study.get("protocolSection", {})
         sponsor_module = protocol_section.get("sponsorCollaboratorsModule", {})
         lead_sponsor = sponsor_module.get("leadSponsor", {})
         return lead_sponsor.get("class") == "INDUSTRY"
-
     def is_interventional(study):
         protocol_section = study.get("protocolSection", {})
         design_module = protocol_section.get("designModule", {})
         return design_module.get("studyType") == "INTERVENTIONAL"
-
     filtered_studies = [
         s for s in all_studies
         if is_in_date_range(s)
@@ -211,32 +183,16 @@ async def extract_all_clinical_trials(
         and is_interventional(s)
     ]
     logger.info(f"Filtered to {len(filtered_studies)} studies in date range {year_start}-{year_end} with drug intervention, industry sponsor, and interventional type")
-    # Save filtered studies
+    # Save filtered studies ONLY
+    raw_path = get_raw_data_path(timestamp)
+    raw_path.mkdir(parents=True, exist_ok=True)
     filtered_file = raw_path / f"filtered_{timestamp}.json"
     save_json({"studies": filtered_studies}, filtered_file)
     logger.info(f"Saved filtered studies to {filtered_file}")
-
-    # Save combined results (for backward compatibility)
-    if save_raw:
-        save_json(
-            {
-                "metadata": {
-                    "disease": disease,
-                    "year_start": year_start,
-                    "year_end": year_end,
-                    "timestamp": timestamp,
-                    "total_studies": len(filtered_studies),
-                    "api_metadata_checked": metadata_checked,
-                },
-                "studies": filtered_studies,
-            },
-            raw_path / "all_studies.json",
-        )
-        logger.info(f"Saved all_studies.json for backward compatibility")
-
     return filtered_studies
 
 
+# This function returns a set of unique drug names across all trials, to be used for enrichment.
 def extract_intervention_names(studies: List[Dict[str, Any]]) -> Set[str]:
     """Extract unique intervention names from clinical trial studies.
     
@@ -323,6 +279,8 @@ def transform_clinical_trials(
         conditions_module = protocol_section.get("conditionsModule", {})
         arms_module = protocol_section.get("armsInterventionsModule", {})
         contacts_locations_module = protocol_section.get("contactsLocationsModule", {})
+        eligibility_module = protocol_section.get("eligibilityModule", {})
+        outcomes_module = protocol_section.get("outcomesModule", {})
         
         # Required fields (API contract)
         nct_id = identification_module.get("nctId")
@@ -374,38 +332,90 @@ def transform_clinical_trials(
         # Extract phases - take the first phase if available
         phases = design_module.get("phases", [])
         study_data["phase"] = phases[0] if phases else None
+        # Set study_phase for downstream compatibility
+        study_data["study_phase"] = study_data["phase"]
         
         # Extract collaborators
         collaborators = sponsor_module.get("collaborators", [])
         study_data["collaborators"] = [collab.get("name") for collab in collaborators if collab.get("name")]
         
-        # Extract interventions
+        # Extract interventions and arm groups for treatment details
         interventions = arms_module.get("interventions", [])
-        study_data["interventions"] = []
-        
-        # Keep only drug interventions
-        drug_intervention_types = ["DRUG", "BIOLOGICAL", "COMBINATION_PRODUCT"]
+        arm_groups = arms_module.get("armGroups", [])
+        study_data["treatment_details"] = []
+        # Build a mapping from arm group label to description
+        arm_group_map = {ag.get("label"): ag for ag in arm_groups if ag.get("label")}
         for intervention in interventions:
             int_type = intervention.get("type")
             int_name = intervention.get("name")
-            
+            int_desc = intervention.get("description")
+            arm_labels = intervention.get("armGroupLabels", [])
             if int_type and int_name:
-                study_data["interventions"].append({
-                    "intervention_type": int_type,
-                    "intervention_name": int_name
-                })
+                # For each arm group this intervention is used in
+                if arm_labels:
+                    for arm_label in arm_labels:
+                        ag = arm_group_map.get(arm_label, {})
+                        study_data["treatment_details"].append({
+                            "intervention_name": int_name,
+                            "intervention_type": int_type,
+                            "intervention_description": int_desc,
+                            "arm_group_label": arm_label,
+                            "arm_group_description": ag.get("description"),
+                        })
+                else:
+                    # No arm group, just intervention
+                    study_data["treatment_details"].append({
+                        "intervention_name": int_name,
+                        "intervention_type": int_type,
+                        "intervention_description": int_desc,
+                        "arm_group_label": None,
+                        "arm_group_description": None,
+                    })
         
         # Parse dates
-        study_data["start_date_parsed"] = parse_date(study_data["start_date"])
-        study_data["completion_date_parsed"] = parse_date(study_data["completion_date"])
-        
-        # Calculate duration in days if both dates are available
-        if study_data["start_date_parsed"] and study_data["completion_date_parsed"]:
-            study_data["duration_days"] = (
-                study_data["completion_date_parsed"] - study_data["start_date_parsed"]
-            ).days
+        start_date = status_module.get("startDateStruct", {}).get("date")
+        completion_date = status_module.get("completionDateStruct", {}).get("date")
+        primary_completion_date = status_module.get("primaryCompletionDateStruct", {}).get("date")
+        start_date_parsed = parse_date(start_date)
+        completion_date_parsed = parse_date(completion_date)
+        primary_completion_date_parsed = parse_date(primary_completion_date)
+        # Use completion_date if available, else primary_completion_date
+        end_date_parsed = completion_date_parsed or primary_completion_date_parsed
+        if start_date_parsed and end_date_parsed:
+            study_data["duration_days"] = (end_date_parsed - start_date_parsed).days
         else:
             study_data["duration_days"] = None
+        
+        # --- Age extraction and preprocessing ---
+        def parse_age(age_str):
+            if not age_str or age_str in ("N/A", "None", ""):
+                return None
+            try:
+                parts = age_str.strip().split()
+                value = float(parts[0])
+                unit = parts[1].lower() if len(parts) > 1 else "years"
+                if unit.startswith("year"):
+                    return value
+                elif unit.startswith("month"):
+                    return value / 12
+                elif unit.startswith("week"):
+                    return value / 52.1429
+                elif unit.startswith("day"):
+                    return value / 365.25
+                else:
+                    return value  # fallback
+            except Exception:
+                return None
+        study_data["minimum_age"] = parse_age(eligibility_module.get("minimumAge"))
+        study_data["maximum_age"] = parse_age(eligibility_module.get("maximumAge"))
+        study_data["std_ages"] = eligibility_module.get("stdAges", []) or []
+        # --- Outcome extraction ---
+        def extract_measures(outcomes):
+            if not outcomes or not isinstance(outcomes, list):
+                return []
+            return [o.get("measure", "").strip() for o in outcomes if o.get("measure")]
+        study_data["primary_outcomes"] = extract_measures(outcomes_module.get("primaryOutcomes", []))
+        study_data["secondary_outcomes"] = extract_measures(outcomes_module.get("secondaryOutcomes", []))
         
         # Add pipeline timestamp
         study_data["data_pull_timestamp"] = datetime.now().isoformat()
@@ -432,8 +442,8 @@ def transform_clinical_trials(
         )
     
     # Extract drug names from interventions for enrichment
-    if 'interventions' in df.columns:
-        df['intervention_names'] = df['interventions'].apply(
+    if 'treatment_details' in df.columns:
+        df['intervention_names'] = df['treatment_details'].apply(
             lambda lst: [d['intervention_name'] for d in lst if d.get('intervention_type') == 'DRUG'] if isinstance(lst, list) else []
         )
     
@@ -443,8 +453,11 @@ def transform_clinical_trials(
     
     output_path = settings.paths.processed_data / f"trials_{timestamp}.parquet"
     df.to_parquet(output_path, index=False)
-    
-    logger.info(f"Transformed {len(df)} studies into tabular data saved to {output_path}")
+
+    # Save as CSV for user output
+    csv_path = settings.paths.processed_data / f"clinical_trials_{timestamp}.csv"
+    df.to_csv(csv_path, index=False)
+    logger.info(f"Transformed {len(df)} studies into tabular data saved to {output_path} and CSV to {csv_path}")
     
     return df
 
@@ -501,25 +514,6 @@ async def check_api_metadata(session: aiohttp.ClientSession) -> Dict[str, Any]:
         
         logger.info(f"API data timestamp: {data_timestamp}")
         logger.info(f"Metadata hash: {metadata_hash}")
-        
-        # Check if we've seen this metadata hash before or if it's the first time
-        cache_dir = settings.paths.cache
-        cache_dir.mkdir(exist_ok=True)
-        
-        hash_file = cache_dir / "metadata_hash.txt"
-        if hash_file.exists():
-            with open(hash_file, "r") as f:
-                old_hash = f.read().strip()
-                
-            if old_hash != metadata_hash:
-                logger.warning(
-                    f"API metadata has changed! Old hash: {old_hash}, New hash: {metadata_hash}"
-                )
-                logger.warning("Schema changes might affect data extraction and processing")
-        
-        # Save the current hash
-        with open(hash_file, "w") as f:
-            f.write(metadata_hash)
         
         return {
             "metadata": metadata,

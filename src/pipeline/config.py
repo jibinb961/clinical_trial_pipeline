@@ -10,11 +10,12 @@ from pathlib import Path
 from typing import Optional
 
 from dotenv import load_dotenv
+load_dotenv()
 from pydantic import BaseModel, Field, HttpUrl, validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Load environment variables from .env file if it exists
-load_dotenv()
+
 
 
 class APIKeys(BaseModel):
@@ -22,20 +23,30 @@ class APIKeys(BaseModel):
 
     gemini: Optional[str] = Field(None, description="Google Gemini API key")
 
-BASE_PATH = os.getenv("BASE_PATH", "/app")
 class Paths(BaseModel):
-    base: Path = Path(BASE_PATH)
-
-    raw_data: Path = Field(default_factory=lambda: Path(BASE_PATH) / "data" / "raw")
-    processed_data: Path = Field(default_factory=lambda: Path(BASE_PATH) / "data" / "processed")
-    cache: Path = Field(default_factory=lambda: Path(BASE_PATH) / "data" / "cache")
-    figures: Path = Field(default_factory=lambda: Path(BASE_PATH) / "data" / "figures")
-    release: Path = Field(default_factory=lambda: Path(BASE_PATH) / "release")
+    base: Path
+    raw_data: Path
+    processed_data: Path
+    cache: Path
+    figures: Path
+    release: Path
 
     @validator("*", pre=True)
     def create_directories(cls, v: Path) -> Path:
         v.mkdir(parents=True, exist_ok=True)
         return v
+
+    @classmethod
+    def from_base(cls, base_path: str):
+        base = Path(base_path)
+        return cls(
+            base=base,
+            raw_data=base / "data" / "raw",
+            processed_data=base / "data" / "processed",
+            cache=base / "data" / "cache",
+            figures=base / "data" / "figures",
+            release=base / "release",
+        )
 
 
 class CtGovSettings(BaseModel):
@@ -59,6 +70,7 @@ env_path = os.path.join(os.getcwd(), ".env")
 class Settings(BaseSettings):
     """Main configuration settings."""
 
+    base_path: str = Field(".", env="BASE_PATH")
 
     model_config = SettingsConfigDict(
         env_file=env_path, 
@@ -82,9 +94,6 @@ class Settings(BaseSettings):
         gemini=os.environ.get("GEMINI_API_KEY"),
     ))
 
-
-    # Paths
-    paths: Paths = Field(default_factory=Paths)
 
     # API settings
     ctgov: CtGovSettings = Field(default_factory=CtGovSettings)
@@ -111,9 +120,21 @@ class Settings(BaseSettings):
         description="Maximum number of pages to fetch from the API (None for unlimited). Can be set via .env as MAX_PAGES."
     )
 
+    @property
+    def paths(self):
+        return Paths.from_base(self.base_path)
+
 
 # Create singleton instance
 settings = Settings() 
+print("settings.base_path:", settings.base_path)
+print("Cache DB path:", settings.cache_db_path)
+print("settings.paths.base:", settings.paths.base)
 print("settings.disease:", settings.disease)
 print("settings.year_start:", settings.year_start)
 print("settings.year_end:", settings.year_end)
+print("settings.paths.raw_data:", settings.paths.raw_data)
+print("settings.paths.processed_data:", settings.paths.processed_data)
+print("settings.paths.cache:", settings.paths.cache)
+print("settings.paths.figures:", settings.paths.figures)
+print("settings.paths.release:", settings.paths.release)
