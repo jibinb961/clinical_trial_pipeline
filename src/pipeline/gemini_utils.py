@@ -239,7 +239,8 @@ Output as JSON with this structure:
             {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
             {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
             {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
-        ]
+        ],
+         tools=["google_search_retrieval"]
     )
     try:
         response = model.generate_content(prompt, generation_config=generation_config)

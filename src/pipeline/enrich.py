@@ -128,7 +128,7 @@ def query_chembl_client(drug_name: str) -> Optional[Dict[str, str]]:
         Dictionary with modality and target or None if not found
     """
     # STEP 4: Query ChEMBL API using Python client
-    logger.debug(f"Querying ChEMBL for {drug_name}")
+    logger.info(f"Querying ChEMBL for {drug_name}")
     
     try:
         # Initialize ChEMBL client resources
