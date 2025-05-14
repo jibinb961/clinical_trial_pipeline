@@ -143,14 +143,16 @@ def generate_summary_statistics(
 def generate_modality_counts(
     df: pd.DataFrame,
 ) -> pd.DataFrame:
-    """Generate counts of trials by modality (case-insensitive)."""
+    """Generate counts of trials by modality (case-insensitive), excluding placebo and unknown."""
     logger.info("Generating modality counts")
     exploded_df = df.explode("modalities")
     # Standardize case
     if 'modalities' in exploded_df.columns:
         exploded_df["modalities"] = exploded_df["modalities"].str.lower()
+    # Exclude placebo and unknown
     modality_counts = exploded_df["modalities"].value_counts().reset_index()
     modality_counts.columns = ["modality", "count"]
+    modality_counts = modality_counts[~modality_counts["modality"].isin(["unknown", "placebo"])]
     modality_counts = modality_counts.sort_values("count", ascending=False).head(30)
     return modality_counts
 
@@ -158,15 +160,16 @@ def generate_modality_counts(
 def generate_target_counts(
     df: pd.DataFrame,
 ) -> pd.DataFrame:
-    """Generate counts of trials by target (case-insensitive)."""
+    """Generate counts of trials by target (case-insensitive), excluding placebo and unknown."""
     logger.info("Generating target counts")
     exploded_df = df.explode("targets")
     # Standardize case
     if 'targets' in exploded_df.columns:
         exploded_df["targets"] = exploded_df["targets"].str.lower()
+    # Exclude placebo and unknown
     target_counts = exploded_df["targets"].value_counts().reset_index()
     target_counts.columns = ["target", "count"]
-    target_counts = target_counts[target_counts["target"] != "unknown"]
+    target_counts = target_counts[~target_counts["target"].isin(["unknown", "placebo"])]
     target_counts = target_counts.head(30)
     return target_counts
 
@@ -339,10 +342,10 @@ def normalize_outcome_text(text):
 
 
 def plot_top_outcomes_normalized(df: pd.DataFrame, outcome_col: str, title: str, top_n: int = 10):
-    """Horizontal bar chart of top N normalized outcome measures (primary or secondary)."""
+    """Horizontal bar chart of top N normalized outcome measures (primary or secondary), excluding placebo."""
     # Flatten and normalize the list of outcomes
     all_outcomes = [normalize_outcome_text(item) for sublist in df[outcome_col].dropna() for item in (sublist if isinstance(sublist, list) else [sublist])]
-    all_outcomes = [x for x in all_outcomes if x]
+    all_outcomes = [x for x in all_outcomes if x and x != "placebo"]
     if not all_outcomes:
         return None
     outcome_counts = Counter(all_outcomes).most_common(top_n)
@@ -1145,21 +1148,21 @@ def analyze_trials(
 
     # Categorize outcomes with Gemini (now using combined function)
     categorized_outcomes = categorize_primary_and_secondary_outcomes_with_gemini(primary_outcomes, secondary_outcomes)
-    # Bar plots for categories (by type)
+    # Grouped bar plot for categories (primary vs secondary)
     if categorized_outcomes:
         df_cat = pd.DataFrame(categorized_outcomes)
-        for outcome_type in ['primary', 'secondary']:
-            df_type = df_cat[df_cat['type'] == outcome_type]
-            if not df_type.empty:
-                counts = df_type['category'].value_counts().reset_index()
-                counts.columns = ['category', 'count']
-                fig_cat = px.bar(
-                    counts,
-                    x='category', y='count',
-                    labels={'category': 'Category', 'count': 'Count'},
-                    title=f'{outcome_type.capitalize()} Outcomes by Category'
-                )
-                fig_cat.write_html(settings.paths.figures / f"{outcome_type}_outcomes_by_category_{timestamp}.html")
+        if not df_cat.empty:
+            counts = df_cat.groupby(['category', 'type']).size().reset_index(name='count')
+            fig_cat = px.bar(
+                counts,
+                x='category',
+                y='count',
+                color='type',
+                barmode='group',
+                labels={'category': 'Category', 'count': 'Count', 'type': 'Outcome Type'},
+                title='Primary and Secondary Outcomes by Category (Grouped)'
+            )
+            fig_cat.write_html(settings.paths.figures / f"outcomes_by_category_grouped_{timestamp}.html")
     # Group categorized outcomes for LLM insights
     def group_outcomes_by_category(categorized_outcomes):
         grouped = defaultdict(lambda: defaultdict(list))
