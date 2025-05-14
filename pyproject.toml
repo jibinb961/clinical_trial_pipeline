@@ -27,6 +27,7 @@ sqlalchemy = "^2.0.23"
 diagrams = "^0.23.3"
 streamlit = "^1.28.2"
 chembl_webresource_client = "^0.10.8"
+google-cloud-storage = "^3.1.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^7.4.3"
