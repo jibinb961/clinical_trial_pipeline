@@ -267,9 +267,11 @@ def generate_release_files(
     description="End-to-end pipeline for clinical trials data analysis",
 )
 async def clinical_trials_pipeline(
-    disease: Optional[str] = None,
-    year_start: Optional[int] = None,
-    year_end: Optional[int] = None,
+    disease: str = "Familial Hypercholesterolemia",
+    year_start: int = 2009,
+    year_end: int = 2024,
+    max_studies: int = 1000,
+    max_pages: int = 20,
     use_cached_raw_data: bool = False,
     timestamp: Optional[str] = None,
 ) -> Path:
@@ -279,6 +281,8 @@ async def clinical_trials_pipeline(
         disease: Disease condition to search for
         year_start: Start year for study search
         year_end: End year for study search
+        max_studies: Maximum number of studies to extract
+        max_pages: Maximum number of pages to extract
         use_cached_raw_data: Whether to use cached raw data
         timestamp: Timestamp string for file naming
         
@@ -286,10 +290,22 @@ async def clinical_trials_pipeline(
         Path to the release directory
     """
     logger = get_run_logger()
-    
-    disease = disease or settings.disease
-    year_start = year_start or settings.year_start
-    year_end = year_end or settings.year_end
+
+    # Override singleton settings with UI parameters if provided
+    if disease is not None:
+        settings.disease = disease
+    if year_start is not None:
+        settings.year_start = year_start
+    if year_end is not None:
+        settings.year_end = year_end
+    if max_studies is not None:
+        settings.max_studies = max_studies
+    if max_pages is not None:
+        settings.max_pages = max_pages
+
+    disease = settings.disease
+    year_start = settings.year_start
+    year_end = settings.year_end
     
     if timestamp is None:
         timestamp = get_timestamp()

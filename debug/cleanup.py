@@ -25,13 +25,6 @@ def remove_files_in_dir(directory, skip_files=None):
             print(f"Deleted directory: {item}")
             DEBUG_LOG.append(f"Deleted directory: {item}")
 
-# 1. Remove cache files
-drug_cache = DATA_DIR / 'drug_cache.sqlite'
-remove_file(drug_cache)
-
-cache_dir = DATA_DIR / 'cache'
-if cache_dir.exists():
-    remove_files_in_dir(cache_dir)
 
 # 2. Remove processed, raw, and figures data
 for subdir in ['processed', 'raw', 'figures']:
