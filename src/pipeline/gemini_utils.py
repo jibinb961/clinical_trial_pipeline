@@ -330,7 +330,7 @@ Drugs:
 {json.dumps(drug_names, indent=2)}
 """
     model = genai.GenerativeModel(settings.gemini_model)
-    response = model.generate_content(prompt, generation_config={"temperature": 0.2, "max_output_tokens": 2048})
+    response = model.generate_content(prompt, generation_config={"temperature": 0.2, "max_output_tokens": 10000})
     content = response.text.strip()
     try:
         start = content.find('{')

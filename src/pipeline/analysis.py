@@ -279,8 +279,8 @@ def plot_status_distribution(df: pd.DataFrame, output_dir: Optional[Path] = None
     plt.close()
 
 
-def plot_enrollment_by_sponsor(df: pd.DataFrame, output_dir: Optional[Path] = None, top_n: int = 30, timestamp: Optional[str] = None):
-    """Boxplot of enrollment sizes by top sponsors."""
+def plot_enrollment_by_sponsor_plotly(df, output_dir=None, top_n=30, timestamp=None):
+    """Interactive horizontal boxplot of enrollment sizes by top sponsors (Plotly HTML only)."""
     if 'lead_sponsor' not in df.columns or 'enrollment_count' not in df.columns:
         logger.warning("'lead_sponsor' or 'enrollment_count' column missing, skipping enrollment by sponsor plot.")
         return
@@ -294,15 +294,25 @@ def plot_enrollment_by_sponsor(df: pd.DataFrame, output_dir: Optional[Path] = No
     if filtered.empty:
         logger.warning("No data for enrollment by sponsor plot after filtering.")
         return
-    plt.figure(figsize=(10, 6))
-    filtered.boxplot(column='enrollment_count', by='lead_sponsor', grid=False)
-    plt.title(f"Enrollment Size by Top {top_n} Sponsors")
-    plt.suptitle("")
-    plt.xlabel("Sponsor")
-    plt.ylabel("Enrollment Count")
-    plt.tight_layout()
-    plt.savefig(output_dir / f"enrollment_by_top_{top_n}_sponsors_{timestamp}.png", dpi=300)
-    plt.close()
+    # Sort sponsors by median enrollment for better visual order
+    sponsor_order = (
+        filtered.groupby('lead_sponsor')['enrollment_count']
+        .median()
+        .sort_values(ascending=False)
+        .index.tolist()
+    )
+    fig = px.box(
+        filtered,
+        y='lead_sponsor',
+        x='enrollment_count',
+        orientation='h',
+        category_orders={'lead_sponsor': sponsor_order},
+        title=f'Enrollment Size by Top {top_n} Sponsors',
+        labels={'lead_sponsor': 'Sponsor', 'enrollment_count': 'Enrollment Count'},
+        height=40 * len(sponsor_order) + 200  # Dynamic height for readability
+    )
+    fig.update_layout(yaxis_title="Sponsor", xaxis_title="Enrollment Count")
+    fig.write_html(output_dir / f"enrollment_by_top_{top_n}_sponsors_{timestamp}.html")
 
 
 def generate_sankey_data(df: pd.DataFrame, top_n: int = 30):
@@ -680,79 +690,6 @@ def create_plots(
     except Exception as e:
         logger.error(f"Error creating top sponsors plot: {e}")
 
-    # Add: Status Distribution (Plotly)
-    try:
-        if 'overall_status' in df.columns and not df['overall_status'].dropna().empty:
-            status_counts = df['overall_status'].value_counts().reset_index()
-            status_counts.columns = ['status', 'count']
-            fig_status = px.pie(
-                status_counts,
-                names='status',
-                values='count',
-                title='Trial Status Distribution',
-            )
-            fig_status.update_layout(
-                autosize=True,
-                height=600,
-                annotations=[
-                    dict(
-                        text=caption,
-                        showarrow=False,
-                        xref="paper",
-                        yref="paper",
-                        x=0.5,
-                        y=-0.15,
-                        font=dict(size=10),
-                    )
-                ],
-            )
-            plots["status_distribution"] = fig_status
-            # Save as HTML only (static image export removed due to Kaleido dependency)
-            fig_status.write_html(output_dir / f"status_distribution_{timestamp}.html")
-        else:
-            logger.warning("Skipping status distribution plot: 'overall_status' column missing or empty.")
-    except Exception as e:
-        logger.error(f"Error creating status distribution plot: {e}")
-
-    # Add: Enrollment by Sponsor (Plotly)
-    try:
-        if 'lead_sponsor' in df.columns and 'enrollment_count' in df.columns:
-            top_sponsors = df['lead_sponsor'].value_counts().head(30).index
-            filtered = df[df['lead_sponsor'].isin(top_sponsors) & df['enrollment_count'].notna()]
-            if not filtered.empty:
-                fig_enroll_sponsor = px.box(
-                    filtered,
-                    x='lead_sponsor',
-                    y='enrollment_count',
-                    title='Enrollment Size by Top 30 Sponsors',
-                    labels={'lead_sponsor': 'Sponsor', 'enrollment_count': 'Enrollment Count'},
-                )
-                fig_enroll_sponsor.update_layout(
-                    autosize=True,
-                    height=600,
-                    xaxis_tickangle=-45,
-                    annotations=[
-                        dict(
-                            text=caption,
-                            showarrow=False,
-                            xref="paper",
-                            yref="paper",
-                            x=0.5,
-                            y=-0.15,
-                            font=dict(size=10),
-                        )
-                    ],
-                )
-                plots["enrollment_by_sponsor"] = fig_enroll_sponsor
-                # Save as HTML only (static image export removed due to Kaleido dependency)
-                fig_enroll_sponsor.write_html(output_dir / f"enrollment_by_sponsor_{timestamp}.html")
-            else:
-                logger.warning("No data for enrollment by sponsor plot after filtering.")
-        else:
-            logger.warning("Skipping enrollment by sponsor plot: 'lead_sponsor' or 'enrollment_count' column missing.")
-    except Exception as e:
-        logger.error(f"Error creating enrollment by sponsor plot: {e}")
-    
     # Add: Sponsor activity over time (Plotly)
     try:
         sponsor_year = generate_sponsor_activity_over_time(df, top_n=30)
@@ -849,7 +786,6 @@ def create_plots(
             fig_primary_norm = plot_top_outcomes_normalized(df, 'primary_outcomes', 'Top Primary Outcome Measures')
             if fig_primary_norm:
                 plots['top_primary_outcomes_normalized'] = fig_primary_norm
-                fig_primary_norm.write_html(output_dir / f"top_primary_outcomes_normalized_{timestamp}.html")
     except Exception as e:
         logger.error(f"Error creating normalized primary outcomes plot: {e}")
     # Add: Top Secondary Outcomes (normalized)
@@ -858,7 +794,6 @@ def create_plots(
             fig_secondary_norm = plot_top_outcomes_normalized(df, 'secondary_outcomes', 'Top Secondary Outcome Measures')
             if fig_secondary_norm:
                 plots['top_secondary_outcomes_normalized'] = fig_secondary_norm
-                fig_secondary_norm.write_html(output_dir / f"top_secondary_outcomes_normalized_{timestamp}.html")
     except Exception as e:
         logger.error(f"Error creating normalized secondary outcomes plot: {e}")
     # Add: Age Distribution
@@ -867,12 +802,6 @@ def create_plots(
             fig_age_box, fig_age_hist = plot_age_distribution(df)
             if fig_age_box:
                 plots['age_boxplot'] = fig_age_box
-                # Save as HTML
-                fig_age_box.write_html(output_dir / f"age_boxplot_{timestamp}.html")
-            if fig_age_hist:
-                plots['age_histogram'] = fig_age_hist
-                # Save as HTML
-                fig_age_hist.write_html(output_dir / f"age_histogram_{timestamp}.html")
     except Exception as e:
         logger.error(f"Error creating age distribution plots: {e}")
     
@@ -882,10 +811,14 @@ def create_plots(
             fig_age_group = plot_age_group_distribution(df)
             if fig_age_group:
                 plots['age_group_distribution'] = fig_age_group
-                # Save as HTML
-                fig_age_group.write_html(output_dir / f"age_group_distribution_{timestamp}.html")
     except Exception as e:
         logger.error(f"Error creating age group distribution plot: {e}")
+    
+    # Add: Enrollment by Sponsor (Plotly HTML only)
+    try:
+        plot_enrollment_by_sponsor_plotly(df, output_dir, top_n=30, timestamp=timestamp)
+    except Exception as e:
+        logger.error(f"Error creating enrollment by sponsor plot: {e}")
     
     logger.info(f"Created {len(plots)} plots")
     return plots
@@ -1006,27 +939,6 @@ def generate_static_matplotlib_plots(
     # Add new static plots
     plot_top_sponsors(df, output_dir, top_n=30, timestamp=timestamp)
     plot_status_distribution(df, output_dir, timestamp=timestamp)
-    plot_enrollment_by_sponsor(df, output_dir, top_n=30, timestamp=timestamp)
-    
-    # Add: Sponsor activity over time (matplotlib)
-    try:
-        sponsor_year = generate_sponsor_activity_over_time(df, top_n=30)
-        if not sponsor_year.empty:
-            plt.figure(figsize=(12, 7))
-            for sponsor in sponsor_year['lead_sponsor'].unique():
-                data = sponsor_year[sponsor_year['lead_sponsor'] == sponsor]
-                plt.plot(data['year'], data['count'], marker='o', label=sponsor)
-            plt.title('New Clinical Trials per Year by Top 30 Sponsors')
-            plt.xlabel('Year')
-            plt.ylabel('Number of New Trials')
-            plt.legend(title='Sponsor', bbox_to_anchor=(1.05, 1), loc='upper left')
-            plt.tight_layout()
-            plt.savefig(output_dir / f"sponsor_activity_over_time_{timestamp}.png", dpi=300)
-            plt.close()
-        else:
-            logger.warning("Skipping sponsor activity over time static plot: insufficient data")
-    except Exception as e:
-        logger.error(f"Error creating sponsor activity over time static plot: {e}")
     
     logger.info("Static plots generated")
 
@@ -1277,6 +1189,12 @@ def analyze_trials(
     with open(insights_path, "w") as f:
         f.write(final_insights)
     logger.info(f"Analysis completed and saved to {insights_path}")
+
+    # --- NEW: Always generate treatment details HTML table ---
+    try:
+        generate_treatment_details_table(df, settings.paths.figures, timestamp)
+    except Exception as e:
+        logger.error(f"Error generating treatment details table: {e}")
 
     return summary_stats, final_insights
 
