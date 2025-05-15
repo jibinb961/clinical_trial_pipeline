@@ -2,10 +2,11 @@ apiVersion: serving.knative.dev/v1
 kind: Service
 metadata:
   name: prefect-agent
-  annotations:
-    run.googleapis.com/execution-environment: gen2
 spec:
   template:
+    metadata:
+      annotations:
+        run.googleapis.com/execution-environment: gen2
     spec:
       containers:
         - image: us-central1-docker.pkg.dev/flawless-outlet-459820-f2/clinical-pipeline/prefect-agent:latest
@@ -34,7 +35,7 @@ spec:
               value: /tmp/drug_cache.sqlite
           resources:
             limits:
-              memory: "2Gi"
-              cpu: "1"
+              memory: "4Gi"
+              cpu: "2"
       timeoutSeconds: 500
       containerConcurrency: 1
