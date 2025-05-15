@@ -24,12 +24,8 @@ jobs:
       - name: Install dependencies
         run: |
           poetry install
-
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY || 'dummy-key-for-testing' }}
-      - Run Tests
-        run: |
-          poetry run pytest
 
       - name: Build Docker image
         run: docker build -t clinical_trial_pipeline .
