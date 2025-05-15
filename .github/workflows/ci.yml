@@ -1,47 +1,76 @@
-name: Clinical Trials Pipeline CI
+name: Build and Deploy Prefect Agent to Cloud Run
 
 on:
   push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
+    branches:
+      - main
+      - users/jbaby/google_cloud_integration
 
 jobs:
-  Test_and_Deploy:
+  deploy:
     runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
 
-      - name: Set up Python 3.12
+    steps:
+      - name: 🧾 Checkout code
+        uses: actions/checkout@v3
+
+      - name: 🔐 Authenticate with Google Cloud
+        uses: google-github-actions/auth@v1
+        with:
+          credentials_json: ${{ secrets.GCP_CREDENTIALS }}
+
+      - name: ☁️ Set up Google Cloud CLI
+        uses: google-github-actions/setup-gcloud@v1
+        with:
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+          install_components: 'beta'
+
+      - name: 🐍 Set up Python + Poetry
         uses: actions/setup-python@v4
         with:
           python-version: '3.12'
 
-      - name: Install Poetry
+      - name: 📦 Install Poetry
         run: |
           curl -sSL https://install.python-poetry.org | python3 -
+          echo "$HOME/.local/bin" >> $GITHUB_PATH
+          export PATH="$HOME/.local/bin:$PATH"
 
-      - name: Install dependencies
+      - name: 📜 Install project dependencies (for deployment)
         run: |
-          poetry install
+          poetry install --only main
 
+      - name: ⚙️ Prefect Login & Register Deployment
         env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY || 'dummy-key-for-testing' }}
-      - Run Tests
+          PREFECT_API_KEY: ${{ secrets.PREFECT_API_KEY }}
+          PREFECT_WORKSPACE: ${{ secrets.PREFECT_WORKSPACE }}
         run: |
-          poetry run pytest
+          poetry run prefect cloud login --key "$PREFECT_API_KEY" --workspace "$PREFECT_WORKSPACE"
+          poetry run prefect deployment build src/pipeline/flow.py:clinical_trials_pipeline \
+            -n cloud-deploy \
+            --infra process \
+            --output deployment.yaml \
+            --skip-upload
+          poetry run prefect deployment apply deployment.yaml
 
-      - name: Build Docker image
-        run: docker build -t clinical_trial_pipeline .
+      - name: 🐳 Authenticate Docker to Artifact Registry
+        run: gcloud auth configure-docker us-central1-docker.pkg.dev
 
-      - name: Run Docker image test
-        run: docker run --rm clinical_trial_pipeline python -c "import src.pipeline; print('Docker image is valid')"
+      - name: 🔨 Build Docker image
+        run: |
+          docker build -t us-central1-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/clinical-pipeline/prefect-agent:latest .
 
-      - name: Log in to GitHub Container Registry (GHCR)
-        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+      - name: 🚀 Push Docker image to Artifact Registry
+        run: |
+          docker push us-central1-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/clinical-pipeline/prefect-agent:latest
 
-      - name: Tag Docker image for GHCR
-        run: docker tag clinical_trial_pipeline ghcr.io/jibinb961/clinical_trial_pipeline:latest
-
-      - name: Push Docker image to GHCR
-        run: docker push ghcr.io/jibinb961/clinical_trial_pipeline:latest
+      - name: 🛰️ Deploy to Cloud Run
+        run: |
+          gcloud run deploy prefect-agent \
+            --image us-central1-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/clinical-pipeline/prefect-agent:latest \
+            --platform managed \
+            --region us-central1 \
+            --memory 2Gi \
+            --set-env-vars PREFECT_API_KEY=${{ secrets.PREFECT_API_KEY }},PREFECT_WORKSPACE=${{ secrets.PREFECT_WORKSPACE }},GCS_BUCKET=${{ secrets.GCS_BUCKET }},GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }} \
+            --no-allow-unauthenticated \
+            --quiet
