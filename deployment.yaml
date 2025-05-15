@@ -1,0 +1,40 @@
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: prefect-agent
+  annotations:
+    run.googleapis.com/execution-environment: gen2
+spec:
+  template:
+    spec:
+      containers:
+        - image: us-central1-docker.pkg.dev/flawless-outlet-459820-f2/clinical-pipeline/prefect-agent:latest
+          command:
+            - bash
+            - -c
+            - >
+              prefect cloud login --key $PREFECT_API_KEY --workspace $PREFECT_WORKSPACE &&
+              prefect deployment build src/pipeline/flow.py:clinical_trials_pipeline -n cloud-deploy -q default --infra process --output deployment.yaml --skip-upload &&
+              prefect deployment apply deployment.yaml &&
+              prefect agent start -q default
+          ports:
+            - containerPort: 8080
+          env:
+            - name: PREFECT_API_KEY
+              value: pnu_d4JtFQto8AdwzMTuL1HdocDGlIBucF3B13rE
+            - name: PREFECT_WORKSPACE
+              value: jibin-baby/clinical-trial-pipeline
+            - name: PREFECT_API_URL
+              value: https://api.prefect.cloud/api/accounts/6c1c0ae5-5bb6-4bc8-ac9e-c62e0156e715/workspaces/5d172eba-a9ce-4180-87e8-eba9b6b5e425
+            - name: GCS_BUCKET
+              value: clinical-trial-pipeline-artifacts-bucket
+            - name: GEMINI_API_KEY
+              value: AIzaSyChtGQCOELmrOaYpq6VyRzOCWJADFrftwE
+            - name: CACHE_DB_PATH
+              value: /tmp/drug_cache.sqlite
+          resources:
+            limits:
+              memory: "2Gi"
+              cpu: "1"
+      timeoutSeconds: 500
+      containerConcurrency: 1

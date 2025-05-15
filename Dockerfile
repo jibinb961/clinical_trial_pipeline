@@ -23,4 +23,4 @@ ENV PREFECT_LOGGING_LEVEL="INFO"
 
 # Start a dummy HTTP server in the background to satisfy Cloud Run's TCP probe,
 # then start the Prefect agent with queue `default`
-CMD ["sh", "-c", "python3 -m http.server 8080 & prefect cloud login --key $PREFECT_API_KEY --workspace $PREFECT_WORKSPACE && prefect deployment build src/pipeline/flow.py:clinical_trials_pipeline -n cloud-deploy -q default --infra process --output deployment.yaml --skip-upload && prefect deployment apply deployment.yaml && prefect agent start -q default"]
+CMD ["sh", "-c", "prefect cloud login --key $PREFECT_API_KEY --workspace $PREFECT_WORKSPACE && prefect deployment build src/pipeline/flow.py:clinical_trials_pipeline -n cloud-deploy -q default --infra process --output deployment.yaml --skip-upload && prefect deployment apply deployment.yaml && prefect agent start -q default"]
