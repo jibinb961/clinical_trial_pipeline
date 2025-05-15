@@ -124,18 +124,9 @@ This repository includes a GitHub Actions workflow that:
 
 ## Output Organization & Run Directories
 
-Each pipeline run creates a dedicated output directory under `data/`, named as:
+Each pipeline run creates output directories under `data/`, named as:
 
-```
-data/<disease>_<timestamp>/
-```
-
-For example:
-```
-data/huntingtons_disease_2025-05-15_041842/
-```
-
-Inside each run directory, outputs are organized into subfolders:
+Inside each sub directory, outputs are organized into subfolders:
 - `figures/` — All generated plots (PNG, HTML, etc.)
 - `processed/` — Processed data files (CSV, Parquet, enrichment reports, etc.)
 - `raw/` — Raw filtered data (JSON)
