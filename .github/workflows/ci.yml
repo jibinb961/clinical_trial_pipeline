@@ -72,6 +72,7 @@ jobs:
             --region us-central1 \
             --memory 2Gi \
             --port 8080 \
+            --execution-environment gen2 \
             --set-env-vars PREFECT_API_KEY=${{ secrets.PREFECT_API_KEY }},PREFECT_WORKSPACE=${{ secrets.PREFECT_WORKSPACE }},GCS_BUCKET=${{ secrets.GCS_BUCKET }},GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }} \
             --no-allow-unauthenticated \
             --quiet
