@@ -104,7 +104,7 @@ class Settings(BaseSettings):
     # Pipeline settings
     concurrency_limit: int = Field(5, description="Maximum number of concurrent API requests")
     cache_db_path: str = Field(
-        "data/drug_cache.sqlite", description="Path to drug cache database"
+        "/tmp/drug_cache.sqlite", description="Path to drug cache database"
     )
     gemini_model: str = Field(
         "gemini-2.0-flash", description="Google Gemini model to use for enrichment"
