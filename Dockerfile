@@ -21,5 +21,14 @@ COPY . .
 # Prefect logging level
 ENV PREFECT_LOGGING_LEVEL="INFO"
 
-# Run Prefect worker (new CLI, replaces agent)
-CMD ["prefect", "worker", "start", "--pool", "default-agent-pool"]
+# Run Prefect agent with queue (classic model)
+CMD bash -c "\
+    prefect cloud login --key $PREFECT_API_KEY --workspace $PREFECT_WORKSPACE && \
+    prefect deployment build src/pipeline/flow.py:clinical_trials_pipeline \
+      -n cloud-deploy \
+      -q default \
+      --infra process \
+      --output deployment.yaml \
+      --skip-upload && \
+    prefect deployment apply deployment.yaml && \
+    prefect agent start -q default"

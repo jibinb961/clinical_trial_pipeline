@@ -40,19 +40,6 @@ jobs:
         run: |
           poetry install --only main
 
-      - name: ⚙️ Prefect Login & Register Deployment
-        env:
-          PREFECT_API_KEY: ${{ secrets.PREFECT_API_KEY }}
-          PREFECT_WORKSPACE: ${{ secrets.PREFECT_WORKSPACE }}
-        run: |
-          poetry run prefect cloud login --key "$PREFECT_API_KEY" --workspace "$PREFECT_WORKSPACE"
-          poetry run prefect deployment build src/pipeline/flow.py:clinical_trials_pipeline \
-            -n cloud-deploy \
-            --infra process \
-            --output deployment.yaml \
-            --skip-upload
-          poetry run prefect deployment apply deployment.yaml
-
       - name: 🐳 Authenticate Docker to Artifact Registry
         run: gcloud auth configure-docker us-central1-docker.pkg.dev
 
@@ -73,6 +60,6 @@ jobs:
             --memory 2Gi \
             --port 8080 \
             --execution-environment gen2 \
-            --set-env-vars PREFECT_API_KEY=${{ secrets.PREFECT_API_KEY }},PREFECT_WORKSPACE=${{ secrets.PREFECT_WORKSPACE }},GCS_BUCKET=${{ secrets.GCS_BUCKET }},GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }} \
+            --set-env-vars PREFECT_API_KEY=${{ secrets.PREFECT_API_KEY }},PREFECT_WORKSPACE=${{ secrets.PREFECT_WORKSPACE }},GCS_BUCKET=${{ secrets.GCS_BUCKET }},GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }},CACHE_DB_PATH=/tmp/drug_cache.sqlite \
             --no-allow-unauthenticated \
             --quiet
