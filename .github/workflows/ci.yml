@@ -49,7 +49,7 @@ jobs:
           poetry run prefect deployment build src/pipeline/flow.py:clinical_trials_pipeline \
             --name cloud-deploy \
             --pool default-agent-pool \
-            --infra subprocess \
+            --infra process \
             --output deployment.yaml \
             --skip-upload
           poetry run prefect deployment apply deployment.yaml
