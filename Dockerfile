@@ -24,13 +24,4 @@ COPY . .
 ENV PREFECT_LOGGING_LEVEL="INFO"
 
 # Entrypoint to register and run the deployment agent
-CMD bash -c "\
-    prefect cloud login --key $PREFECT_API_KEY --workspace $PREFECT_WORKSPACE && \
-    prefect deployment build src/pipeline/flow.py:clinical_trials_pipeline \
-      -n cloud-deploy \
-      -q default \
-      --infra process \
-      --output deployment.yaml \
-      --skip-upload && \
-    prefect deployment apply deployment.yaml && \
-    prefect agent start -q default"
+CMD ["prefect", "agent", "start", "-q", "default"]
