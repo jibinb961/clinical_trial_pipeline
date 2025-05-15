@@ -19,6 +19,8 @@ from plotly.graph_objects import Figure as PlotlyFigure
 import plotly.graph_objects as go
 import re
 from collections import Counter, defaultdict
+import tempfile
+from src.pipeline.utils import upload_to_gcs
 
 
 from src.pipeline.config import settings
@@ -255,7 +257,9 @@ def plot_top_sponsors(df: pd.DataFrame, output_dir: Optional[Path] = None, top_n
     plt.ylabel("Number of Trials")
     plt.xticks(rotation=45, ha="right")
     plt.tight_layout()
-    plt.savefig(output_dir / f"top_{top_n}_sponsors_{timestamp}.png", dpi=300)
+    with tempfile.NamedTemporaryFile(suffix=f"_top_{top_n}_sponsors_{timestamp}.png", delete=True) as tmp_png:
+        plt.savefig(tmp_png.name, dpi=300)
+        upload_to_gcs(tmp_png.name, f"runs/{timestamp}/figures/top_{top_n}_sponsors_{timestamp}.png")
     plt.close()
 
 
@@ -275,7 +279,9 @@ def plot_status_distribution(df: pd.DataFrame, output_dir: Optional[Path] = None
     plt.title("Trial Status Distribution")
     plt.ylabel("")
     plt.tight_layout()
-    plt.savefig(output_dir / f"trial_status_distribution_{timestamp}.png", dpi=300)
+    with tempfile.NamedTemporaryFile(suffix=f"_trial_status_distribution_{timestamp}.png", delete=True) as tmp_png:
+        plt.savefig(tmp_png.name, dpi=300)
+        upload_to_gcs(tmp_png.name, f"runs/{timestamp}/figures/trial_status_distribution_{timestamp}.png")
     plt.close()
 
 
@@ -312,7 +318,9 @@ def plot_enrollment_by_sponsor_plotly(df, output_dir=None, top_n=30, timestamp=N
         height=40 * len(sponsor_order) + 200  # Dynamic height for readability
     )
     fig.update_layout(yaxis_title="Sponsor", xaxis_title="Enrollment Count")
-    fig.write_html(output_dir / f"enrollment_by_top_{top_n}_sponsors_{timestamp}.html")
+    with tempfile.NamedTemporaryFile(suffix=f"_enrollment_by_top_{top_n}_sponsors_{timestamp}.html", delete=True) as tmp_html:
+        fig.write_html(tmp_html.name)
+        upload_to_gcs(tmp_html.name, f"runs/{timestamp}/figures/enrollment_by_top_{top_n}_sponsors_{timestamp}.html")
 
 
 def generate_sankey_data(df: pd.DataFrame, top_n: int = 30):
@@ -455,7 +463,9 @@ def plot_modality_by_phase_distribution(df: pd.DataFrame, output_dir: Path, time
         category_orders={'study_phase': phase_order}
     )
     fig.update_layout(barmode='stack', height=600)
-    fig.write_html(output_dir / f"modality_by_phase_distribution_{timestamp}.html")
+    with tempfile.NamedTemporaryFile(suffix=f"_modality_by_phase_distribution_{timestamp}.html", delete=True) as tmp_html:
+        fig.write_html(tmp_html.name)
+        upload_to_gcs(tmp_html.name, f"runs/{timestamp}/figures/modality_by_phase_distribution_{timestamp}.html")
 
 
 @log_execution_time
@@ -1259,7 +1269,9 @@ def plot_age_quartiles_box(df, output_dir, timestamp):
     plt.xlabel("Age Type")
     plt.ylabel("Age (years)")
     plt.tight_layout()
-    plt.savefig(output_dir / f"age_quartiles_box_{timestamp}.png", dpi=300)
+    with tempfile.NamedTemporaryFile(suffix=f"_age_quartiles_box_{timestamp}.png", delete=True) as tmp_png:
+        plt.savefig(tmp_png.name, dpi=300)
+        upload_to_gcs(tmp_png.name, f"runs/{timestamp}/figures/age_quartiles_box_{timestamp}.png")
     plt.close()
 
 def plot_enrollment_quartiles_box(df, output_dir, timestamp):
@@ -1278,7 +1290,9 @@ def plot_enrollment_quartiles_box(df, output_dir, timestamp):
     plt.title('Enrollment Distribution (Boxplot)')
     plt.xlabel('Enrollment Count')
     plt.tight_layout()
-    plt.savefig(output_dir / f"enrollment_quartiles_box_{timestamp}.png", dpi=300)
+    with tempfile.NamedTemporaryFile(suffix=f"_enrollment_quartiles_box_{timestamp}.png", delete=True) as tmp_png:
+        plt.savefig(tmp_png.name, dpi=300)
+        upload_to_gcs(tmp_png.name, f"runs/{timestamp}/figures/enrollment_quartiles_box_{timestamp}.png")
     plt.close()
 
 def generate_treatment_details_table(df: pd.DataFrame, output_dir: Optional[Path] = None, timestamp: Optional[str] = None) -> Optional[Path]:
@@ -1308,10 +1322,10 @@ def generate_treatment_details_table(df: pd.DataFrame, output_dir: Optional[Path
     os.makedirs(output_dir, exist_ok=True)
     if timestamp is None:
         timestamp = get_timestamp()
-    html_path = output_dir / f"treatment_details_{timestamp}.html"
-    table_df.to_html(html_path, index=False, escape=False)
-    logger.info(f"Saved treatment details table to {html_path}")
-    return html_path
+    with tempfile.NamedTemporaryFile(suffix=f"_treatment_details_{timestamp}.html", delete=True) as tmp_html:
+        table_df.to_html(tmp_html.name, index=False, escape=False)
+        upload_to_gcs(tmp_html.name, f"runs/{timestamp}/figures/treatment_details_{timestamp}.html")
+    return f"runs/{timestamp}/figures/treatment_details_{timestamp}.html"
 
 def generate_llm_insights(df: pd.DataFrame, top_primary_clusters=None, top_secondary_clusters=None, primary_outcomes=None, secondary_outcomes=None, categorized_outcomes=None) -> str:
     """

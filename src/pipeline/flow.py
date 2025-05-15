@@ -7,6 +7,7 @@ data pipeline, including extraction, transformation, enrichment, and analysis.
 import asyncio
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
+import tempfile
 
 import pandas as pd
 from prefect import flow, get_run_logger, task
@@ -21,7 +22,7 @@ from src.pipeline.etl import (
     load_and_transform_from_raw,
     transform_clinical_trials,
 )
-from src.pipeline.utils import get_timestamp
+from src.pipeline.utils import get_timestamp, upload_to_gcs, download_from_gcs
 
 
 @task(name="extract_clinical_trials")
@@ -171,94 +172,53 @@ def generate_release_files(
         Path to the release directory
     """
     logger = get_run_logger()
-    
     if timestamp is None:
         timestamp = get_timestamp()
-    
-    release_dir = settings.paths.release
-    figures_dir = settings.paths.figures
-    
-    # Create release directory
-    release_dir.mkdir(parents=True, exist_ok=True)
-    
-    # Copy CSV data
-    csv_path = release_dir / f"clinical_trials_{timestamp}.csv"
-    enriched_df.to_csv(csv_path, index=False)
-    
-    # Copy figures - check if directory exists first
-    import shutil
-    import glob
-    
-    # Create figures directory in release if it doesn't exist
-    release_figures_dir = release_dir / "figures"
-    release_figures_dir.mkdir(exist_ok=True)
-    
-    # Only try to copy files if the figures directory exists
-    if figures_dir.exists():
-        # Copy SVG and PNG files if they exist
-        svg_files = list(figures_dir.glob("*.svg"))
-        png_files = list(figures_dir.glob("*.png"))
-        
-        if svg_files:
-            for file_path in svg_files:
-                shutil.copy(file_path, release_figures_dir)
-                logger.info(f"Copied {file_path} to release directory")
-        else:
-            logger.warning("No SVG files found in figures directory")
-            
-        if png_files:
-            for file_path in png_files:
-                shutil.copy(file_path, release_figures_dir)
-                logger.info(f"Copied {file_path} to release directory")
-        else:
-            logger.warning("No PNG files found in figures directory")
-    else:
-        logger.warning(f"Figures directory {figures_dir} does not exist, skipping figure copy")
-    
-    # Create README.md with insights
-    readme_path = release_dir / "README.md"
-    with open(readme_path, "w") as f:
-        f.write(f"# Clinical Trials Analysis for {settings.disease}\n\n")
-        f.write(f"Analysis run on: {timestamp}\n\n")
-        f.write(insights)
-    
-    # Create demo.md with outline
-    demo_path = release_dir / "demo.md"
-    with open(demo_path, "w") as f:
-        f.write(f"# 5-Minute Demo Script: Clinical Trials Analysis for {settings.disease}\n\n")
-        f.write("## 1. Introduction (30 seconds)\n")
-        f.write("- Brief explanation of the dataset and analysis goals\n")
-        f.write("- Overview of the disease area studied\n\n")
-        f.write("## 2. Data Collection Process (1 minute)\n")
-        f.write("- ClinicalTrials.gov API extraction workflow\n")
-        f.write("- Drug enrichment process using multiple data sources\n\n")
-        f.write("## 3. Key Findings (2 minutes)\n")
-        
-        # Check if we have actual data
+    # GCS base path for this run
+    gcs_base = f"runs/{timestamp}/release"
+    # Write CSV to temp file, upload to GCS
+    with tempfile.NamedTemporaryFile(suffix=".csv", delete=True) as tmp_csv:
+        enriched_df.to_csv(tmp_csv.name, index=False)
+        upload_to_gcs(tmp_csv.name, f"{gcs_base}/clinical_trials_{timestamp}.csv")
+    # Write README.md to temp file, upload to GCS
+    with tempfile.NamedTemporaryFile(suffix=".md", delete=True, mode="w+") as tmp_readme:
+        tmp_readme.write(f"# Clinical Trials Analysis for {settings.disease}\n\n")
+        tmp_readme.write(f"Analysis run on: {timestamp}\n\n")
+        tmp_readme.write(insights)
+        tmp_readme.flush()
+        upload_to_gcs(tmp_readme.name, f"{gcs_base}/README.md")
+    # Write demo.md to temp file, upload to GCS
+    with tempfile.NamedTemporaryFile(suffix=".md", delete=True, mode="w+") as tmp_demo:
+        tmp_demo.write(f"# 5-Minute Demo Script: Clinical Trials Analysis for {settings.disease}\n\n")
+        tmp_demo.write("## 1. Introduction (30 seconds)\n")
+        tmp_demo.write("- Brief explanation of the dataset and analysis goals\n")
+        tmp_demo.write("- Overview of the disease area studied\n\n")
+        tmp_demo.write("## 2. Data Collection Process (1 minute)\n")
+        tmp_demo.write("- ClinicalTrials.gov API extraction workflow\n")
+        tmp_demo.write("- Drug enrichment process using multiple data sources\n\n")
+        tmp_demo.write("## 3. Key Findings (2 minutes)\n")
         if enriched_df.empty:
-            f.write("- **No data found** for the specified criteria\n")
-            f.write("- Discuss potential reasons for lack of data\n")
-            f.write("- Suggest alternative search strategies\n\n")
+            tmp_demo.write("- **No data found** for the specified criteria\n")
+            tmp_demo.write("- Discuss potential reasons for lack of data\n")
+            tmp_demo.write("- Suggest alternative search strategies\n\n")
         else:
-            f.write("- Present top modalities and targets\n")
-            f.write("- Show enrollment and duration patterns\n")
-            f.write("- Highlight any notable trends over time\n\n")
-        
-        f.write("## 4. Interactive Visualization Demo (1 minute)\n")
-        
+            tmp_demo.write("- Present top modalities and targets\n")
+            tmp_demo.write("- Show enrollment and duration patterns\n")
+            tmp_demo.write("- Highlight any notable trends over time\n\n")
+        tmp_demo.write("## 4. Interactive Visualization Demo (1 minute)\n")
         if enriched_df.empty:
-            f.write("- Discuss how visualizations would be presented if data were available\n")
-            f.write("- Show sample visualizations from previous analyses\n\n")
+            tmp_demo.write("- Discuss how visualizations would be presented if data were available\n")
+            tmp_demo.write("- Show sample visualizations from previous analyses\n\n")
         else:
-            f.write("- Walk through Plotly interactive charts\n")
-            f.write("- Show how to filter and explore the data\n\n")
-            
-        f.write("## 5. Conclusions & Next Steps (30 seconds)\n")
-        f.write("- Summarize key insights\n")
-        f.write("- Suggest potential follow-up analyses\n")
-    
-    logger.info(f"Generated release files in {release_dir}")
-    return release_dir
+            tmp_demo.write("- Walk through Plotly interactive charts\n")
+            tmp_demo.write("- Show how to filter and explore the data\n\n")
+        tmp_demo.write("## 5. Conclusions & Next Steps (30 seconds)\n")
+        tmp_demo.write("- Summarize key insights\n")
+        tmp_demo.write("- Suggest potential follow-up analyses\n")
+        tmp_demo.flush()
+        upload_to_gcs(tmp_demo.name, f"{gcs_base}/demo.md")
+    logger.info(f"Generated release files and uploaded to GCS under {gcs_base}")
+    return Path(gcs_base)
 
 
 @flow(
@@ -290,6 +250,11 @@ async def clinical_trials_pipeline(
         Path to the release directory
     """
     logger = get_run_logger()
+
+    # Download the shared drug cache from GCS at the start
+    local_cache_path = str(settings.cache_db_path)
+    gcs_cache_path = "cache/drug_cache.sqlite"
+    download_from_gcs(gcs_cache_path, local_cache_path)
 
     # Override singleton settings with UI parameters if provided
     if disease is not None:
@@ -336,6 +301,9 @@ async def clinical_trials_pipeline(
     # Step 4: Generate release files
     release_dir = generate_release_files(enriched_df, insights, timestamp)
     
+    # Upload the updated drug cache to GCS at the end
+    upload_to_gcs(local_cache_path, gcs_cache_path)
+
     logger.info(f"Pipeline completed successfully. Release files available at {release_dir}")
     return release_dir
 

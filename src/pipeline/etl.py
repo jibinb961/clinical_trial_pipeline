@@ -15,6 +15,7 @@ from tqdm.asyncio import tqdm_asyncio
 import json
 import hashlib
 import logging
+import tempfile
 
 from src.pipeline.config import settings
 from src.pipeline.utils import (
@@ -25,6 +26,7 @@ from src.pipeline.utils import (
     log_execution_time,
     logger,
     save_json,
+    upload_to_gcs,
 )
 
 
@@ -450,15 +452,15 @@ def transform_clinical_trials(
     # Save transformed data
     if timestamp is None:
         timestamp = get_timestamp()
-    
-    output_path = settings.paths.processed_data / f"trials_{timestamp}.parquet"
-    df.to_parquet(output_path, index=False)
-
-    # Save as CSV for user output
-    csv_path = settings.paths.processed_data / f"clinical_trials_{timestamp}.csv"
-    df.to_csv(csv_path, index=False)
-    logger.info(f"Transformed {len(df)} studies into tabular data saved to {output_path} and CSV to {csv_path}")
-    
+    # Write DataFrame to temp parquet, upload to GCS
+    with tempfile.NamedTemporaryFile(suffix=".parquet", delete=True) as tmp_parquet:
+        df.to_parquet(tmp_parquet.name, index=False)
+        upload_to_gcs(tmp_parquet.name, f"runs/{timestamp}/trials_{timestamp}.parquet")
+    # Write DataFrame to temp CSV, upload to GCS
+    with tempfile.NamedTemporaryFile(suffix=".csv", delete=True) as tmp_csv:
+        df.to_csv(tmp_csv.name, index=False)
+        upload_to_gcs(tmp_csv.name, f"runs/{timestamp}/clinical_trials_{timestamp}.csv")
+    logger.info(f"Transformed {len(df)} studies into tabular data and uploaded to GCS runs/{timestamp}/trials_{timestamp}.parquet and clinical_trials_{timestamp}.csv")
     return df
 
 
