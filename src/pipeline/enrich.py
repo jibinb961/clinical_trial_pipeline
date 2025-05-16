@@ -380,7 +380,10 @@ def apply_enrichment_to_trials(trials_df: pd.DataFrame, drug_info: Dict[str, Dic
     for col in ["modalities", "targets", "enrichment_sources"]:
         if col in enriched_df.columns:
             enriched_df[col] = enriched_df[col].apply(flatten_list_of_lists)
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    # PATCH: Only generate timestamp if not provided
+    if timestamp is None:
+        from src.pipeline.utils import get_timestamp
+        timestamp = get_timestamp()
     output_path = settings.paths.processed_data / f"trials_enriched_{timestamp}.parquet"
     enriched_df.to_parquet(output_path, index=False)
     # Also save as CSV
@@ -406,6 +409,9 @@ def apply_enrichment_to_trials(trials_df: pd.DataFrame, drug_info: Dict[str, Dic
                     "source": source
                 })
         report_df = pd.DataFrame(rows)
+        for col in ["modality", "target", "source"]:
+            if col in report_df.columns:
+                report_df[col] = report_df[col].apply(lambda x: ', '.join(x) if isinstance(x, list) else str(x) if x is not None else "")
         report_df = report_df.drop_duplicates(subset=["nct_id", "drug", "modality", "target", "source"])
         with tempfile.NamedTemporaryFile(suffix=".csv", delete=True) as tmp_csv:
             report_df.to_csv(tmp_csv.name, index=False)

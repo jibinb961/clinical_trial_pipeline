@@ -111,7 +111,7 @@ async def query_gemini_for_drug_info(drug_name: str) -> Optional[Dict[str, str]]
             "temperature": 0.2,  # Lower temperature for more factual responses
             "top_p": 0.95,
             "top_k": 40,
-            "max_output_tokens": 256,  # Shorter output for JSON only
+            "max_output_tokens": 5000,  # Shorter output for JSON only
         }
         
         # Create model
