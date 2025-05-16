@@ -1,4 +1,4 @@
-name: Build and Deploy Prefect Agent to Cloud Run
+name: Build and Push Prefect Flow Image
 
 on:
   push:
@@ -34,46 +34,11 @@ jobs:
         run: |
           curl -sSL https://install.python-poetry.org | python3 -
           echo "$HOME/.local/bin" >> $GITHUB_PATH
-          export PATH="$HOME/.local/bin:$PATH"
-
-      - name: 📜 Install project dependencies (for deployment)
-        run: |
-          poetry install --only main
-
-      - name: ⚙️ Prefect Login & Register Deployment
-        env:
-          PREFECT_API_KEY: ${{ secrets.PREFECT_API_KEY }}
-          PREFECT_WORKSPACE: ${{ secrets.PREFECT_WORKSPACE }}
-        run: |
-          poetry run prefect cloud login --key "$PREFECT_API_KEY" --workspace "$PREFECT_WORKSPACE"
-          poetry run prefect deployment build src/pipeline/flow.py:clinical_trials_pipeline \
-            --name cloud-deploy \
-            --pool default-agent-pool \
-            --infra process \
-            --output deployment.yaml \
-            --skip-upload
-          poetry run prefect deployment apply deployment.yaml
-
-      - name: 🐳 Authenticate Docker to Artifact Registry
-        run: gcloud auth configure-docker us-central1-docker.pkg.dev
 
       - name: 🔨 Build Docker image
         run: |
-          docker build -t us-central1-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/clinical-pipeline/prefect-agent:latest .
+          docker build -t us-central1-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/clinical-pipeline/clinical-pipeline:latest .
 
       - name: 🚀 Push Docker image to Artifact Registry
         run: |
-          docker push us-central1-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/clinical-pipeline/prefect-agent:latest
-
-      - name: 🛰️ Deploy to Cloud Run
-        run: |
-          gcloud run deploy prefect-agent \
-            --image us-central1-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/clinical-pipeline/prefect-agent:latest \
-            --platform managed \
-            --region us-central1 \
-            --memory 2Gi \
-            --port 8080 \
-            --execution-environment gen2 \
-            --set-env-vars PREFECT_API_KEY=${{ secrets.PREFECT_API_KEY }},PREFECT_WORKSPACE=${{ secrets.PREFECT_WORKSPACE }},GCS_BUCKET=${{ secrets.GCS_BUCKET }},GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }},CACHE_DB_PATH=/tmp/drug_cache.sqlite \
-            --no-allow-unauthenticated \
-            --quiet
+          docker push us-central1-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/clinical-pipeline/clinical-pipeline:latest
