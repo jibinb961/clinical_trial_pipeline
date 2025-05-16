@@ -81,16 +81,22 @@ def get_cached_drug(drug_name: str) -> Optional[Dict[str, str]]:
 
 
 def cache_drug(
-    drug_name: str, modality: str, target: str, source: str
+    drug_name: str, modality: Any, target: Any, source: str
 ) -> None:
     """Cache drug information in SQLite database.
-    
+
     Args:
         drug_name: Name of the drug
-        modality: Drug modality
-        target: Drug target
+        modality: Drug modality (can be string or list)
+        target: Drug target (can be string or list)
         source: Source of the information
     """
+    # ✅ Convert lists to comma-separated strings
+    if isinstance(modality, list):
+        modality = ", ".join(modality)
+    if isinstance(target, list):
+        target = ", ".join(target)
+
     engine = create_engine(f"sqlite:///{settings.cache_db_path}")
     logger.info(f"[CACHE] WRITE: '{drug_name}' -> modality: '{modality}', target: '{target}', source: '{source}' in cache DB: {settings.cache_db_path}")
     with Session(engine) as session:
@@ -101,12 +107,12 @@ def cache_drug(
             source=source,
             timestamp=datetime.now().isoformat(),
         )
-        
+
         # Upsert (insert or update)
         existing = session.execute(
             select(DrugCache).where(DrugCache.name == drug_name)
         ).first()
-        
+
         if existing:
             existing[0].modality = modality
             existing[0].target = target
@@ -114,7 +120,7 @@ def cache_drug(
             existing[0].timestamp = datetime.now().isoformat()
         else:
             session.add(drug)
-        
+
         session.commit()
     
     logger.debug(f"Cached drug: {drug_name} from {source}")

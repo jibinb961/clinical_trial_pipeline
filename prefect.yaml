@@ -1,5 +1,5 @@
 name: clinical_trial_pipeline
-prefect-version: 2.20.18
+prefect-version: 3.4.1
 
 pull:
 - prefect.deployments.steps.set_working_directory:
@@ -7,6 +7,7 @@ pull:
 
 deployments:
 - name: clinical-flow-deploy
+  flow_name: clinical_trials_pipeline
   entrypoint: src/pipeline/flow.py:clinical_trials_pipeline
   parameters: {}
   work_pool:
