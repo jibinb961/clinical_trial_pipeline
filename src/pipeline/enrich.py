@@ -366,25 +366,27 @@ def apply_enrichment_to_trials(trials_df: pd.DataFrame, drug_info: Dict[str, Dic
             enriched_df.at[i, "modalities"] = modalities
             enriched_df.at[i, "targets"] = targets
             enriched_df.at[i, "enrichment_sources"] = sources
-    # --- PATCH: Ensure all list columns are lists or None ---
-    def ensure_list_or_none(val):
-        if val is None or (isinstance(val, float) and pd.isna(val)):
-            return None
-        if isinstance(val, list):
-            return val
-        return [val]
+    # Flatten list-of-lists in modalities, targets, enrichment_sources
+    def flatten_list_of_lists(lst):
+        if not isinstance(lst, list):
+            return [lst]
+        flat = []
+        for item in lst:
+            if isinstance(item, list):
+                flat.extend(item)
+            else:
+                flat.append(item)
+        return flat
     for col in ["modalities", "targets", "enrichment_sources"]:
         if col in enriched_df.columns:
-            enriched_df[col] = enriched_df[col].apply(ensure_list_or_none)
-    # --- END PATCH ---
-    if timestamp is None:
-        from src.pipeline.utils import get_timestamp
-        timestamp = get_timestamp()
-    # Write enriched DataFrame to temp parquet, upload to GCS
-    with tempfile.NamedTemporaryFile(suffix=".parquet", delete=True) as tmp_parquet:
-        enriched_df.to_parquet(tmp_parquet.name, index=False)
-        upload_to_gcs(tmp_parquet.name, f"runs/{timestamp}/trials_enriched_{timestamp}.parquet")
-    logger.info(f"Saved enriched DataFrame to GCS runs/{timestamp}/trials_enriched_{timestamp}.parquet")
+            enriched_df[col] = enriched_df[col].apply(flatten_list_of_lists)
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    output_path = settings.paths.processed_data / f"trials_enriched_{timestamp}.parquet"
+    enriched_df.to_parquet(output_path, index=False)
+    # Also save as CSV
+    csv_path = settings.paths.processed_data / f"trials_enriched_{timestamp}.csv"
+    enriched_df.to_csv(csv_path, index=False)
+    logger.info(f"Saved enriched DataFrame to {output_path} and {csv_path}")
     # Generate enrichment report CSV
     try:
         rows = []
