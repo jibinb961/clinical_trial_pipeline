@@ -3,6 +3,9 @@
 import glob
 import os
 from pathlib import Path
+import tempfile
+from google.cloud import storage
+from src.pipeline.utils import download_from_gcs
 
 import pandas as pd
 import plotly.express as px
@@ -17,196 +20,158 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+GCS_BUCKET = "clinical-trial-pipeline-artifacts-bucket"
+
 
 def get_latest_data() -> pd.DataFrame:
-    """Get the latest processed clinical trials data.
+    """Get the latest processed clinical trials data from GCS.
     
     Returns:
         DataFrame with clinical trial data
     """
-    # Find all parquet files in the processed data directory
-    data_dir = Path("../data/processed")
-    parquet_files = list(data_dir.glob("trials_enriched_*.parquet"))
-    
-    if not parquet_files:
-        st.error("No processed data found. Please run the pipeline first.")
+    # List all parquet files in the bucket under runs/*/trials_enriched_*.parquet
+    client = storage.Client()
+    bucket = client.bucket(GCS_BUCKET)
+    blobs = list(bucket.list_blobs(prefix="runs/"))
+    parquet_blobs = [b for b in blobs if b.name.endswith(".parquet") and "trials_enriched_" in b.name]
+    if not parquet_blobs:
+        st.error("No processed data found in GCS. Please run the pipeline first.")
         st.stop()
-    
-    # Get the most recent file
-    latest_file = max(parquet_files, key=os.path.getctime)
-    st.sidebar.info(f"Using data from: {latest_file.name}")
-    
-    # Load the data
-    return pd.read_parquet(latest_file)
+    # Get the most recent file by GCS updated time
+    latest_blob = max(parquet_blobs, key=lambda b: b.updated)
+    st.sidebar.info(f"Using data from: {latest_blob.name}")
+    # Download to a temp file
+    with tempfile.NamedTemporaryFile(suffix=".parquet", delete=False) as tmp_file:
+        download_from_gcs(latest_blob.name, tmp_file.name, bucket_name=GCS_BUCKET)
+        df = pd.read_parquet(tmp_file.name)
+    return df
 
+
+def list_runs(bucket):
+    # List all unique run folders under runs/
+    blobs = list(bucket.list_blobs(prefix="runs/"))
+    run_folders = set()
+    for b in blobs:
+        parts = b.name.split("/")
+        if len(parts) > 1 and parts[1]:
+            run_folders.add(parts[1])
+    return sorted(run_folders, reverse=True)
+
+def list_artifacts(bucket, run):
+    # List all files for a given run
+    prefix = f"runs/{run}/"
+    blobs = list(bucket.list_blobs(prefix=prefix))
+    figures = []
+    data_files = []
+    release_files = []
+    for b in blobs:
+        if b.name.endswith("/"):
+            continue
+        rel_path = b.name[len(prefix):]
+        if rel_path.startswith("figures/"):
+            figures.append(b)
+        elif rel_path.startswith("release/"):
+            release_files.append(b)
+        else:
+            data_files.append(b)
+    return figures, data_files, release_files
+
+def display_artifact(bucket, blob, filetype_hint=None):
+    import tempfile
+    import streamlit as st
+    from PIL import Image
+    # Download to temp file
+    suffix = Path(blob.name).suffix
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp_file:
+        download_from_gcs(blob.name, tmp_file.name, bucket_name=bucket.name)
+        if filetype_hint == "image" or suffix in [".png", ".jpg", ".jpeg"]:
+            st.image(tmp_file.name, caption=blob.name)
+        elif filetype_hint == "html" or suffix == ".html":
+            with open(tmp_file.name, "r", encoding="utf-8") as f:
+                html = f.read()
+            # Inject CSS for background and text color
+            html = (
+                "<style>"
+                "body, table {background: #fff !important; color: #222 !important;}"
+                "table {border-collapse: collapse; width: 100%;}"
+                "th, td {border: 1px solid #ddd; padding: 8px;}"
+                "</style>"
+            ) + html
+            st.components.v1.html(html, height=600, scrolling=True)
+        elif filetype_hint == "csv" or suffix == ".csv":
+            df = pd.read_csv(tmp_file.name)
+            st.dataframe(df)
+        elif filetype_hint == "parquet" or suffix == ".parquet":
+            df = pd.read_parquet(tmp_file.name)
+            st.dataframe(df)
+        elif filetype_hint == "md" or suffix in [".md", ".markdown"]:
+            with open(tmp_file.name, "r", encoding="utf-8") as f:
+                md = f.read()
+            st.markdown(md)
+        else:
+            st.download_button(f"Download {blob.name}", tmp_file.name)
 
 def main():
-    """Main function for the Streamlit app."""
-    st.title("Clinical Trials Dashboard")
-    st.markdown(
-        """
-        This dashboard visualizes clinical trial data extracted from ClinicalTrials.gov
-        and enriched with drug modality and target information.
-        """
-    )
-    
-    # Load data
-    df = get_latest_data()
-    
-    # Get dataset information
-    disease_list = df["conditions"].str.split(", ").explode().unique().tolist()
-    main_disease = disease_list[0] if disease_list else "Unknown"
-    
-    # Display summary metrics
-    st.header(f"Summary for {main_disease} Clinical Trials")
-    
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        st.metric("Total Trials", len(df))
-        
-    with col2:
-        completed_trials = df[df["status"] == "Completed"].shape[0]
-        st.metric("Completed Trials", completed_trials)
-        
-    with col3:
-        ongoing_trials = df[df["status"].isin(["Recruiting", "Active, not recruiting"])].shape[0]
-        st.metric("Ongoing Trials", ongoing_trials)
-        
-    with col4:
-        avg_enrollment = int(df["enrollment"].mean())
-        st.metric("Avg. Enrollment", avg_enrollment)
+    st.title("Clinical Trials Pipeline Artifacts Browser")
+    st.markdown("""
+    Browse and view all pipeline run artifacts stored in Google Cloud Storage.
+    """)
+    client = storage.Client()
+    bucket = client.bucket(GCS_BUCKET)
+    # List available runs
+    runs = list_runs(bucket)
+    if not runs:
+        st.error("No pipeline runs found in GCS bucket.")
+        st.stop()
+    selected_run = st.selectbox("Select pipeline run (timestamp):", runs)
+    st.info(f"Artifacts for run: {selected_run}")
+    figures, data_files, release_files = list_artifacts(bucket, selected_run)
 
-    # --- New: Key Quantitative Visualizations ---
-    st.subheader("Key Quantitative Visualizations")
-    from src.pipeline.analysis import create_plots
-    plots = create_plots(df)
-    # Show top primary outcomes
-    if "top_primary_outcomes" in plots:
-        st.plotly_chart(plots["top_primary_outcomes"], use_container_width=True)
-    # Show top secondary outcomes
-    if "top_secondary_outcomes" in plots:
-        st.plotly_chart(plots["top_secondary_outcomes"], use_container_width=True)
-    # Show age boxplot
-    if "age_boxplot" in plots:
-        st.plotly_chart(plots["age_boxplot"], use_container_width=True)
-    # Show age histogram
-    if "age_histogram" in plots:
-        st.plotly_chart(plots["age_histogram"], use_container_width=True)
-    
-    # Display trial phases distribution
-    st.header("Trial Phases")
-    phase_counts = df["study_phase"].value_counts().reset_index()
-    phase_counts.columns = ["Phase", "Count"]
-    
-    fig_phases = px.bar(
-        phase_counts,
-        x="Phase",
-        y="Count",
-        title="Distribution of Clinical Trial Phases",
-        color="Phase",
-    )
-    st.plotly_chart(fig_phases, use_container_width=True)
-    
-    # Display interactive filters
-    st.header("Trial Explorer")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        selected_phases = st.multiselect(
-            "Select Trial Phases",
-            df["study_phase"].unique().tolist(),
-            default=df["study_phase"].unique().tolist()[:3],
-        )
-        
-    with col2:
-        # Extract unique modalities from the exploded list
-        all_modalities = []
-        for modalities in df["modalities"]:
-            if isinstance(modalities, list):
-                all_modalities.extend(modalities)
-        unique_modalities = list(set(all_modalities))
-        
-        selected_modalities = st.multiselect(
-            "Select Drug Modalities",
-            unique_modalities,
-            default=unique_modalities[:3] if len(unique_modalities) > 3 else unique_modalities,
-        )
-    
-    # Filter data based on selections
-    filtered_df = df.copy()
-    
-    if selected_phases:
-        filtered_df = filtered_df[filtered_df["study_phase"].isin(selected_phases)]
-        
-    if selected_modalities:
-        filtered_df = filtered_df[filtered_df["modalities"].apply(
-            lambda x: any(m in selected_modalities for m in (x or []))
-        )]
-    
-    # Display filtered results
-    st.write(f"Showing {len(filtered_df)} trials")
-    st.dataframe(
-        filtered_df[["nct_id", "brief_title", "study_phase", "start_date", "status", "enrollment"]],
-        hide_index=True,
-    )
-    
-    # Display enrollment vs. duration scatter plot
-    st.header("Enrollment vs. Duration")
-    
-    scatter_df = filtered_df.dropna(subset=["enrollment", "duration_days"])
-    
-    fig_scatter = px.scatter(
-        scatter_df,
-        x="enrollment",
-        y="duration_days",
-        color="study_phase",
-        hover_name="brief_title",
-        size="enrollment",
-        size_max=50,
-        opacity=0.7,
-        title="Trial Enrollment vs. Duration",
-        labels={
-            "enrollment": "Number of Participants",
-            "duration_days": "Duration (days)",
-            "study_phase": "Study Phase",
-        },
-    )
-    
-    st.plotly_chart(fig_scatter, use_container_width=True)
-    
-    # Display modality trends over time
-    st.header("Modality Trends Over Time")
-    
-    # Prepare data: extract year from start date and explode modalities
-    trend_df = filtered_df.copy()
-    trend_df["year"] = pd.to_datetime(trend_df["start_date"]).dt.year
-    trend_df = trend_df.dropna(subset=["year", "modalities"])
-    
-    # Explode the modalities list to get one row per modality per trial
-    exploded_df = trend_df.explode("modalities")
-    
-    # Count trials by year and modality
-    yearly_counts = exploded_df.groupby(["year", "modalities"]).size().reset_index()
-    yearly_counts.columns = ["Year", "Modality", "Count"]
-    
-    # Create area chart
-    if not yearly_counts.empty:
-        fig_trends = px.area(
-            yearly_counts,
-            x="Year",
-            y="Count",
-            color="Modality",
-            title="Clinical Trials by Modality Over Time",
-        )
-        st.plotly_chart(fig_trends, use_container_width=True)
+    st.subheader("Figures (Plots)")
+    if figures:
+        for blob in sorted(figures, key=lambda b: b.name):
+            col1, col2 = st.columns([3,1])
+            with col1:
+                if blob.name.endswith(".png"):
+                    display_artifact(bucket, blob, filetype_hint="image")
+                elif blob.name.endswith(".html"):
+                    display_artifact(bucket, blob, filetype_hint="html")
+                else:
+                    st.write(blob.name)
+            with col2:
+                st.download_button(f"Download {Path(blob.name).name}", data=blob.download_as_bytes(), file_name=Path(blob.name).name, key=f"download-{blob.name}")
     else:
-        st.info("No trend data available for the selected filters.")
-    
-    # Show raw data expander
-    with st.expander("View Raw Data"):
-        st.dataframe(filtered_df)
+        st.write("No figures found for this run.")
+    st.subheader("Data Files (CSV, Parquet)")
+    if data_files:
+        for blob in sorted(data_files, key=lambda b: b.name):
+            col1, col2 = st.columns([3,1])
+            with col1:
+                if blob.name.endswith(".csv"):
+                    display_artifact(bucket, blob, filetype_hint="csv")
+                elif blob.name.endswith(".parquet"):
+                    display_artifact(bucket, blob, filetype_hint="parquet")
+                else:
+                    st.write(blob.name)
+            with col2:
+                st.download_button(f"Download {Path(blob.name).name}", data=blob.download_as_bytes(), file_name=Path(blob.name).name, key=f"download-{blob.name}")
+    else:
+        st.write("No data files found for this run.")
+    st.subheader("Release Files (Markdown, CSV, etc.)")
+    if release_files:
+        for blob in sorted(release_files, key=lambda b: b.name):
+            col1, col2 = st.columns([3,1])
+            with col1:
+                if blob.name.endswith(".md"):
+                    display_artifact(bucket, blob, filetype_hint="md")
+                elif blob.name.endswith(".csv"):
+                    display_artifact(bucket, blob, filetype_hint="csv")
+                else:
+                    st.write(blob.name)
+            with col2:
+                st.download_button(f"Download {Path(blob.name).name}", data=blob.download_as_bytes(), file_name=Path(blob.name).name, key=f"download-{blob.name}")
+    else:
+        st.write("No release files found for this run.")
 
 
 if __name__ == "__main__":

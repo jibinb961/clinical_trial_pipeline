@@ -6,39 +6,43 @@ An end-to-end data pipeline for extracting, enriching, analyzing, and visualizin
 
 ```mermaid
 graph TD
-    A[ClinicalTrials.gov API] --> B[Extract]
-    B --> C[Raw JSON Storage]
-    C --> D[Transform]
-    
-    E[ChEMBL API] --> G[Enrich]
-    H[Google Gemini API] --> G
-    
-    D --> G
-    G --> I[SQLite Drug Cache]
-    G --> J[Processed Parquet]
-    
-    J --> K[Analysis]
-    K --> L[Visualizations]
-    K --> M[Summary Insights using Gemini]
-    
-    L --> N[Release Artifacts]
-    M --> N
-    J --> N
 
-    subgraph Prefect_Cloud_Orchestration
-        B
-        D
-        G
-        K
-    end
+  %% CI/CD Deployment
+  A[GitHub Repo] --> B[GitHub Actions: Build Docker Image]
+  B --> C[Push Image to Google Artifact Registry]
 
-    subgraph CI_CD
-        O[GitHub Actions] --> P[Docker Build]
-        P --> Q[GitHub Container Registry]
-        Q --> R[Prefect Agent Container]
-    end
+  %% Orchestration with Prefect
+  D[Self-hosted Prefect Server - Render] --> E[Cloud Run Work Pool]
+  E --> F[Prefect Triggers Cloud Run Job]
+  C --> F
 
-    R --> Prefect_Cloud_Orchestration
+  %% Pipeline Execution in Cloud Run
+  F --> G[Start Pipeline Container]
+  G --> H[Accept Parameters - Disease, Year]
+  H --> I[Fetch Data from ClinicalTrials.gov API]
+  I --> J[Parse Interventions to Extract Drugs]
+
+  %% Drug Enrichment
+  J --> K[Check SQLite Drug Cache in GCS]
+  K -- Not Cached --> L[Query ChEMBL API]
+  L -- ChEMBL Fails --> M[Fallback to Google Gemini LLM]
+  L --> N[Append New Drug Info to SQLite Cache]
+  M --> N
+  N --> O[Upload Updated Cache to GCS]
+
+  %% Data Output
+  J --> P[Construct Enriched DataFrame]
+  O --> P
+  P --> Q[Generate CSV and Parquet]
+  P --> R[Create Plots - Matplotlib and HTML]
+  P --> S[Generate Gemini Summaries]
+  Q --> T[Upload Outputs to Run Folder in GCS]
+  R --> T
+  S --> T
+
+  %% Visualization Layer
+  T --> U[Streamlit App - Visualize and Download Artifacts]
+
 ```
 
 

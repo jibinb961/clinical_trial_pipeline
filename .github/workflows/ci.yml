@@ -5,6 +5,10 @@ on:
     branches:
       - main
       - users/jbaby/google_cloud_integration
+    paths-ignore:
+      - 'app/**'
+      - 'docs/**'
+      - 'README.md'
 
 jobs:
   deploy:
