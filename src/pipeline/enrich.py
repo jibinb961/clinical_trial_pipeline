@@ -21,9 +21,10 @@ from chembl_webresource_client.settings import Settings
 
 from src.pipeline.config import settings
 from src.pipeline.gemini_utils import query_gemini_for_drug_info, initialize_gemini, batch_query_gemini
-from src.pipeline.utils import log_execution_time, logger, retry_async
+from src.pipeline.utils import log_execution_time, logger, retry_async, upload_to_gcs
 
 import re
+import tempfile
 
 # Define SQLAlchemy models
 Base = declarative_base()
@@ -80,16 +81,22 @@ def get_cached_drug(drug_name: str) -> Optional[Dict[str, str]]:
 
 
 def cache_drug(
-    drug_name: str, modality: str, target: str, source: str
+    drug_name: str, modality: Any, target: Any, source: str
 ) -> None:
     """Cache drug information in SQLite database.
-    
+
     Args:
         drug_name: Name of the drug
-        modality: Drug modality
-        target: Drug target
+        modality: Drug modality (can be string or list)
+        target: Drug target (can be string or list)
         source: Source of the information
     """
+    # ✅ Convert lists to comma-separated strings
+    if isinstance(modality, list):
+        modality = ", ".join(modality)
+    if isinstance(target, list):
+        target = ", ".join(target)
+
     engine = create_engine(f"sqlite:///{settings.cache_db_path}")
     logger.info(f"[CACHE] WRITE: '{drug_name}' -> modality: '{modality}', target: '{target}', source: '{source}' in cache DB: {settings.cache_db_path}")
     with Session(engine) as session:
@@ -100,12 +107,12 @@ def cache_drug(
             source=source,
             timestamp=datetime.now().isoformat(),
         )
-        
+
         # Upsert (insert or update)
         existing = session.execute(
             select(DrugCache).where(DrugCache.name == drug_name)
         ).first()
-        
+
         if existing:
             existing[0].modality = modality
             existing[0].target = target
@@ -113,7 +120,7 @@ def cache_drug(
             existing[0].timestamp = datetime.now().isoformat()
         else:
             session.add(drug)
-        
+
         session.commit()
     
     logger.debug(f"Cached drug: {drug_name} from {source}")
@@ -323,7 +330,7 @@ async def enrich_drugs(drug_names: Set[str]) -> Dict[str, Dict[str, Any]]:
     return chembl_results
 
 
-def apply_enrichment_to_trials(trials_df: pd.DataFrame, drug_info: Dict[str, Dict[str, str]]) -> pd.DataFrame:
+def apply_enrichment_to_trials(trials_df: pd.DataFrame, drug_info: Dict[str, Dict[str, str]], timestamp: Optional[str] = None) -> pd.DataFrame:
     logger.info("Applying drug enrichment data to trials DataFrame")
     enriched_df = trials_df.copy()
     if "modalities" not in enriched_df.columns:
@@ -373,10 +380,14 @@ def apply_enrichment_to_trials(trials_df: pd.DataFrame, drug_info: Dict[str, Dic
     for col in ["modalities", "targets", "enrichment_sources"]:
         if col in enriched_df.columns:
             enriched_df[col] = enriched_df[col].apply(flatten_list_of_lists)
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
-    output_path = settings.paths.processed_data / f"trials_enriched_{timestamp}.parquet"
-    enriched_df.to_parquet(output_path, index=False)
-    logger.info(f"Saved enriched DataFrame to {output_path}")
+    if timestamp is None:
+        from src.pipeline.utils import get_timestamp
+        timestamp = get_timestamp()
+    # Write enriched DataFrame to temp parquet, upload to GCS
+    with tempfile.NamedTemporaryFile(suffix=".parquet", delete=True) as tmp_parquet:
+        enriched_df.to_parquet(tmp_parquet.name, index=False)
+        upload_to_gcs(tmp_parquet.name, f"runs/{timestamp}/trials_enriched_{timestamp}.parquet")
+    logger.info(f"Saved enriched DataFrame to GCS runs/{timestamp}/trials_enriched_{timestamp}.parquet")
     # Generate enrichment report CSV
     try:
         rows = []
@@ -397,9 +408,10 @@ def apply_enrichment_to_trials(trials_df: pd.DataFrame, drug_info: Dict[str, Dic
                 })
         report_df = pd.DataFrame(rows)
         report_df = report_df.drop_duplicates(subset=["nct_id", "drug", "modality", "target", "source"])
-        report_path = settings.paths.processed_data / f"enrichment_report_{timestamp}.csv"
-        report_df.to_csv(report_path, index=False)
-        logger.info(f"Saved enrichment report to {report_path}")
+        with tempfile.NamedTemporaryFile(suffix=".csv", delete=True) as tmp_csv:
+            report_df.to_csv(tmp_csv.name, index=False)
+            upload_to_gcs(tmp_csv.name, f"runs/{timestamp}/enrichment_report_{timestamp}.csv")
+        logger.info(f"Saved enrichment report to GCS runs/{timestamp}/enrichment_report_{timestamp}.csv")
     except Exception as e:
         logger.error(f"Error generating enrichment report: {e}")
     return enriched_df 

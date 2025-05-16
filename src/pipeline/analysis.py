@@ -19,6 +19,8 @@ from plotly.graph_objects import Figure as PlotlyFigure
 import plotly.graph_objects as go
 import re
 from collections import Counter, defaultdict
+import tempfile
+from src.pipeline.utils import upload_to_gcs
 
 
 from src.pipeline.config import settings
@@ -255,7 +257,9 @@ def plot_top_sponsors(df: pd.DataFrame, output_dir: Optional[Path] = None, top_n
     plt.ylabel("Number of Trials")
     plt.xticks(rotation=45, ha="right")
     plt.tight_layout()
-    plt.savefig(output_dir / f"top_{top_n}_sponsors_{timestamp}.png", dpi=300)
+    with tempfile.NamedTemporaryFile(suffix=f"_top_{top_n}_sponsors_{timestamp}.png", delete=True) as tmp_png:
+        plt.savefig(tmp_png.name, dpi=300)
+        upload_to_gcs(tmp_png.name, f"runs/{timestamp}/figures/top_{top_n}_sponsors_{timestamp}.png")
     plt.close()
 
 
@@ -275,7 +279,9 @@ def plot_status_distribution(df: pd.DataFrame, output_dir: Optional[Path] = None
     plt.title("Trial Status Distribution")
     plt.ylabel("")
     plt.tight_layout()
-    plt.savefig(output_dir / f"trial_status_distribution_{timestamp}.png", dpi=300)
+    with tempfile.NamedTemporaryFile(suffix=f"_trial_status_distribution_{timestamp}.png", delete=True) as tmp_png:
+        plt.savefig(tmp_png.name, dpi=300)
+        upload_to_gcs(tmp_png.name, f"runs/{timestamp}/figures/trial_status_distribution_{timestamp}.png")
     plt.close()
 
 
@@ -312,7 +318,9 @@ def plot_enrollment_by_sponsor_plotly(df, output_dir=None, top_n=30, timestamp=N
         height=40 * len(sponsor_order) + 200  # Dynamic height for readability
     )
     fig.update_layout(yaxis_title="Sponsor", xaxis_title="Enrollment Count")
-    fig.write_html(output_dir / f"enrollment_by_top_{top_n}_sponsors_{timestamp}.html")
+    with tempfile.NamedTemporaryFile(suffix=f"_enrollment_by_top_{top_n}_sponsors_{timestamp}.html", delete=True) as tmp_html:
+        fig.write_html(tmp_html.name)
+        upload_to_gcs(tmp_html.name, f"runs/{timestamp}/figures/enrollment_by_top_{top_n}_sponsors_{timestamp}.html")
 
 
 def generate_sankey_data(df: pd.DataFrame, top_n: int = 30):
@@ -455,55 +463,49 @@ def plot_modality_by_phase_distribution(df: pd.DataFrame, output_dir: Path, time
         category_orders={'study_phase': phase_order}
     )
     fig.update_layout(barmode='stack', height=600)
-    fig.write_html(output_dir / f"modality_by_phase_distribution_{timestamp}.html")
+    with tempfile.NamedTemporaryFile(suffix=f"_modality_by_phase_distribution_{timestamp}.html", delete=True) as tmp_html:
+        fig.write_html(tmp_html.name)
+        upload_to_gcs(tmp_html.name, f"runs/{timestamp}/figures/modality_by_phase_distribution_{timestamp}.html")
 
 
 @log_execution_time
 def create_plots(
-    df: pd.DataFrame, output_dir: Optional[Path] = None
+    df: pd.DataFrame, output_dir: Optional[Path] = None, timestamp: Optional[str] = None
 ) -> Dict[str, PlotlyFigure]:
     """Create plots from clinical trial data.
     
     Args:
         df: DataFrame with clinical trial data
         output_dir: Directory to save plots (defaults to settings)
+        timestamp: Run-level timestamp for file naming and GCS folder
         
     Returns:
         Dictionary of Plotly figures
     """
-    # STEP 5: Create visualizations
     logger.info("Creating plots")
-    
     if output_dir is None:
         output_dir = settings.paths.figures
     os.makedirs(output_dir, exist_ok=True)
-    
+    if timestamp is None:
+        timestamp = get_timestamp()
     plots = {}
-    timestamp = get_timestamp()
     run_date = pd.Timestamp.now().strftime("%Y-%m-%d")
     caption = f"Source: clinicaltrials.gov, retrieved {run_date}"
-    
-    # Check if DataFrame is empty
     if df.empty:
         logger.warning("Cannot create plots: DataFrame is empty")
         return plots
-    
-    # --- NEW: Modality-by-Phase Distribution Chart ---
+    # Modality-by-Phase Distribution Chart
     try:
         plot_modality_by_phase_distribution(df, output_dir, timestamp)
+        local_path = output_dir / f"modality_by_phase_distribution_{timestamp}.html"
+        upload_to_gcs(str(local_path), f"runs/{timestamp}/figures/modality_by_phase_distribution_{timestamp}.html")
     except Exception as e:
         logger.error(f"Error creating modality-by-phase distribution chart: {e}")
-    # --- END NEW ---
-    
-    # 1. Stacked area chart of modality shares over time
+    # Stacked area chart of modality shares over time
     try:
         yearly_modality_data = generate_yearly_modality_data(df)
-        
         if not yearly_modality_data.empty and len(yearly_modality_data.columns) > 1:
-            # Get all modality columns (excluding 'year')
             modality_columns = [col for col in yearly_modality_data.columns if col != "year"]
-            
-            # Melt the DataFrame to get it in the right format for the area chart
             melted_df = pd.melt(
                 yearly_modality_data,
                 id_vars=["year"],
@@ -511,8 +513,6 @@ def create_plots(
                 var_name="modality",
                 value_name="count",
             )
-            
-            # Create the stacked area chart
             fig_modality = px.area(
                 melted_df,
                 x="year",
@@ -538,20 +538,18 @@ def create_plots(
                 ],
             )
             plots["modality_over_time"] = fig_modality
-            # Save as HTML only (static image export removed due to Kaleido dependency)
-            fig_modality.write_html(output_dir / f"modality_over_time_{timestamp}.html")
+            html_path = output_dir / f"modality_over_time_{timestamp}.html"
+            fig_modality.write_html(html_path)
+            upload_to_gcs(str(html_path), f"runs/{timestamp}/figures/modality_over_time_{timestamp}.html")
         else:
             logger.warning("Skipping modality over time plot: insufficient data")
     except Exception as e:
         logger.error(f"Error creating modality over time plot: {e}")
-    
-    # 2. Boxplot of trial durations by phase
+    # Boxplot of trial durations by phase
     try:
         if 'duration_days' in df.columns and 'study_phase' in df.columns:
             duration_data = df.dropna(subset=["duration_days", "study_phase"]).copy()
-            
             if not duration_data.empty:
-                # --- UPDATED phase mapping for uppercase and variants ---
                 def map_phase(phase):
                     if not isinstance(phase, str):
                         return "Other"
@@ -570,9 +568,7 @@ def create_plots(
                     }
                     return mapping.get(p, "Other")
                 duration_data["simplified_phase"] = duration_data["study_phase"].map(map_phase)
-                # Order phases logically
                 phase_order = ["Phase 1", "Phase 1/2", "Phase 2", "Phase 2/3", "Phase 3", "Phase 4", "N/A", "Early Phase 1", "Other", "Phase 1/2/3"]
-                # Create boxplot
                 fig_duration = px.box(
                     duration_data,
                     x="simplified_phase",
@@ -600,28 +596,25 @@ def create_plots(
                     ],
                 )
                 plots["duration_by_phase"] = fig_duration
-                # Save as HTML only (static image export removed due to Kaleido dependency)
-                fig_duration.write_html(output_dir / f"duration_by_phase_{timestamp}.html")
+                html_path = output_dir / f"duration_by_phase_{timestamp}.html"
+                fig_duration.write_html(html_path)
+                upload_to_gcs(str(html_path), f"runs/{timestamp}/figures/duration_by_phase_{timestamp}.html")
             else:
                 logger.warning("Skipping duration by phase plot: no valid data after filtering")
         else:
             logger.warning("Skipping duration by phase plot: required columns missing")
     except Exception as e:
         logger.error(f"Error creating duration by phase plot: {e}")
-    
-    # 3. Histogram of enrollment sizes
+    # Histogram of enrollment sizes
     try:
         enrollment_column = None
         for col in ['enrollment', 'enrollment_count']:
             if col in df.columns:
                 enrollment_column = col
                 break
-                
         if enrollment_column:
             enrollment_data = df.dropna(subset=[enrollment_column]).copy()
-            
             if not enrollment_data.empty:
-                # Create histogram with bin size adjustments
                 fig_enrollment = px.histogram(
                     enrollment_data,
                     x=enrollment_column,
@@ -645,16 +638,16 @@ def create_plots(
                     ],
                 )
                 plots["enrollment_distribution"] = fig_enrollment
-                # Save as HTML only (static image export removed due to Kaleido dependency)
-                fig_enrollment.write_html(output_dir / f"enrollment_distribution_{timestamp}.html")
+                html_path = output_dir / f"enrollment_distribution_{timestamp}.html"
+                fig_enrollment.write_html(html_path)
+                upload_to_gcs(str(html_path), f"runs/{timestamp}/figures/enrollment_distribution_{timestamp}.html")
             else:
                 logger.warning("Skipping enrollment distribution plot: no valid data after filtering")
         else:
             logger.warning("Skipping enrollment distribution plot: required columns missing")
     except Exception as e:
         logger.error(f"Error creating enrollment distribution plot: {e}")
-    
-    # Add: Top Sponsors (Plotly)
+    # Top Sponsors (Plotly)
     try:
         if 'lead_sponsor' in df.columns and not df['lead_sponsor'].dropna().empty:
             sponsor_counts = df['lead_sponsor'].value_counts().head(30).reset_index()
@@ -683,14 +676,14 @@ def create_plots(
                 ],
             )
             plots["top_sponsors"] = fig_sponsors
-            # Save as HTML only (static image export removed due to Kaleido dependency)
-            fig_sponsors.write_html(output_dir / f"top_sponsors_{timestamp}.html")
+            html_path = output_dir / f"top_sponsors_{timestamp}.html"
+            fig_sponsors.write_html(html_path)
+            upload_to_gcs(str(html_path), f"runs/{timestamp}/figures/top_sponsors_{timestamp}.html")
         else:
             logger.warning("Skipping top sponsors plot: 'lead_sponsor' column missing or empty.")
     except Exception as e:
         logger.error(f"Error creating top sponsors plot: {e}")
-
-    # Add: Sponsor activity over time (Plotly)
+    # Sponsor activity over time (Plotly)
     try:
         sponsor_year = generate_sponsor_activity_over_time(df, top_n=30)
         if not sponsor_year.empty:
@@ -720,39 +713,34 @@ def create_plots(
                 ],
             )
             plots["sponsor_activity_over_time"] = fig_sponsor_trend
-            # Save as HTML only (static image export removed due to Kaleido dependency)
-            fig_sponsor_trend.write_html(output_dir / f"sponsor_activity_over_time_{timestamp}.html")
+            html_path = output_dir / f"sponsor_activity_over_time_{timestamp}.html"
+            fig_sponsor_trend.write_html(html_path)
+            upload_to_gcs(str(html_path), f"runs/{timestamp}/figures/sponsor_activity_over_time_{timestamp}.html")
         else:
             logger.warning("Skipping sponsor activity over time plot: insufficient data")
     except Exception as e:
         logger.error(f"Error creating sponsor activity over time plot: {e}")
-    
-    # Add: Sankey chart (Plotly)
+    # Sankey chart (Plotly)
     try:
         sankey_df, top_sponsors, top_modalities, top_targets = generate_sankey_data(df, top_n=30)
         if sankey_df is not None and not sankey_df.empty:
-            # Build node list
             sponsor_nodes = list(top_sponsors)
             modality_nodes = list(top_modalities)
             target_nodes = list(top_targets)
             nodes = sponsor_nodes + modality_nodes + target_nodes
             node_indices = {name: i for i, name in enumerate(nodes)}
-            # Build links: sponsor->modality
             sponsor_modality = sankey_df.groupby(['sponsor', 'modality']).size().reset_index(name='count')
             modality_target = sankey_df.groupby(['modality', 'target']).size().reset_index(name='count')
-            # Links from sponsor to modality
             links_sponsor_modality = dict(
                 source=[node_indices[row['sponsor']] for _, row in sponsor_modality.iterrows()],
                 target=[node_indices[row['modality']] for _, row in sponsor_modality.iterrows()],
                 value=[row['count'] for _, row in sponsor_modality.iterrows()]
             )
-            # Links from modality to target
             links_modality_target = dict(
                 source=[node_indices[row['modality']] for _, row in modality_target.iterrows()],
                 target=[node_indices[row['target']] for _, row in modality_target.iterrows()],
                 value=[row['count'] for _, row in modality_target.iterrows()]
             )
-            # Combine links
             link = dict(
                 source=links_sponsor_modality['source'] + links_modality_target['source'],
                 target=links_sponsor_modality['target'] + links_modality_target['target'],
@@ -773,92 +761,52 @@ def create_plots(
                 height=700
             )
             plots["sankey_sponsor_modality_target"] = fig_sankey
-            # Save as HTML only (static image export removed due to Kaleido dependency)
-            fig_sankey.write_html(output_dir / f"sankey_sponsor_modality_target_{timestamp}.html")
+            html_path = output_dir / f"sankey_sponsor_modality_target_{timestamp}.html"
+            fig_sankey.write_html(html_path)
+            upload_to_gcs(str(html_path), f"runs/{timestamp}/figures/sankey_sponsor_modality_target_{timestamp}.html")
         else:
             logger.warning("Skipping Sankey plot: insufficient data")
     except Exception as e:
         logger.error(f"Error creating Sankey plot: {e}")
-    
-    # Add: Top Primary Outcomes (normalized)
-    try:
-        if 'primary_outcomes' in df.columns:
-            fig_primary_norm = plot_top_outcomes_normalized(df, 'primary_outcomes', 'Top Primary Outcome Measures')
-            if fig_primary_norm:
-                plots['top_primary_outcomes_normalized'] = fig_primary_norm
-    except Exception as e:
-        logger.error(f"Error creating normalized primary outcomes plot: {e}")
-    # Add: Top Secondary Outcomes (normalized)
-    try:
-        if 'secondary_outcomes' in df.columns:
-            fig_secondary_norm = plot_top_outcomes_normalized(df, 'secondary_outcomes', 'Top Secondary Outcome Measures')
-            if fig_secondary_norm:
-                plots['top_secondary_outcomes_normalized'] = fig_secondary_norm
-    except Exception as e:
-        logger.error(f"Error creating normalized secondary outcomes plot: {e}")
-    # Add: Age Distribution
-    try:
-        if 'minimum_age' in df.columns and 'maximum_age' in df.columns:
-            fig_age_box, fig_age_hist = plot_age_distribution(df)
-            if fig_age_box:
-                plots['age_boxplot'] = fig_age_box
-    except Exception as e:
-        logger.error(f"Error creating age distribution plots: {e}")
-    
-    # Add: Age Group Distribution (categorical)
-    try:
-        if 'age_groups' in df.columns:
-            fig_age_group = plot_age_group_distribution(df)
-            if fig_age_group:
-                plots['age_group_distribution'] = fig_age_group
-    except Exception as e:
-        logger.error(f"Error creating age group distribution plot: {e}")
-    
-    # Add: Enrollment by Sponsor (Plotly HTML only)
+    # Enrollment by Sponsor (Plotly HTML only)
     try:
         plot_enrollment_by_sponsor_plotly(df, output_dir, top_n=30, timestamp=timestamp)
+        html_path = output_dir / f"enrollment_by_top_30_sponsors_{timestamp}.html"
+        upload_to_gcs(str(html_path), f"runs/{timestamp}/figures/enrollment_by_top_30_sponsors_{timestamp}.html")
     except Exception as e:
         logger.error(f"Error creating enrollment by sponsor plot: {e}")
-    
     logger.info(f"Created {len(plots)} plots")
     return plots
 
 
 def generate_static_matplotlib_plots(
-    df: pd.DataFrame, output_dir: Optional[Path] = None
+    df: pd.DataFrame, output_dir: Optional[Path] = None, timestamp: Optional[str] = None
 ) -> None:
     """Generate static matplotlib plots for reporting.
     
     Args:
         df: DataFrame with clinical trial data
         output_dir: Directory to save plots (defaults to settings)
+        timestamp: Run-level timestamp for file naming and GCS folder
     """
-    # STEP 6: Create static plots for reports
     logger.info("Generating static matplotlib plots")
-    
-    # Check if DataFrame is empty
     if df.empty:
         logger.warning("Cannot create static plots: DataFrame is empty")
         return
-    
     if output_dir is None:
         output_dir = settings.paths.figures
     os.makedirs(output_dir, exist_ok=True)
-    
-    timestamp = get_timestamp()
+    if timestamp is None:
+        timestamp = get_timestamp()
     run_date = pd.Timestamp.now().strftime("%Y-%m-%d")
     caption = f"Source: clinicaltrials.gov, retrieved {run_date}"
-    
     # 1. Bar chart of top modalities
     try:
         if 'modalities' in df.columns:
             modality_counts = generate_modality_counts(df)
-            
             if not modality_counts.empty:
-                # Filter out "Unknown" and sort by count
                 modality_counts = modality_counts[modality_counts["modality"] != "unknown"]
                 modality_counts = modality_counts.sort_values("count", ascending=False).head(30)
-                
                 plt.figure(figsize=(10, 6))
                 bars = plt.bar(modality_counts["modality"], modality_counts["count"])
                 plt.title("Top 30 Modalities in Clinical Trials")
@@ -867,8 +815,9 @@ def generate_static_matplotlib_plots(
                 plt.xticks(rotation=45, ha="right")
                 plt.figtext(0.5, 0.01, caption, ha="center", fontsize=9)
                 plt.tight_layout()
-                
-                plt.savefig(output_dir / f"top_modalities_{timestamp}.png", dpi=300)
+                png_path = output_dir / f"top_modalities_{timestamp}.png"
+                plt.savefig(png_path, dpi=300)
+                upload_to_gcs(str(png_path), f"runs/{timestamp}/figures/top_modalities_{timestamp}.png")
                 plt.close()
             else:
                 logger.warning("Skipping top modalities plot: no valid data after filtering")
@@ -876,19 +825,15 @@ def generate_static_matplotlib_plots(
             logger.warning("Skipping top modalities plot: 'modalities' column missing")
     except Exception as e:
         logger.error(f"Error creating top modalities plot: {e}")
-    
     # 2. Pie chart of trial phases
     try:
-        # Check if study_phase column exists
         phase_column = None
         for col in ['study_phase', 'phase']:
             if col in df.columns:
                 phase_column = col
                 break
-                
         if phase_column:
             phase_counts = df[phase_column].value_counts()
-            
             if not phase_counts.empty:
                 plt.figure(figsize=(10, 8))
                 plt.pie(
@@ -901,8 +846,9 @@ def generate_static_matplotlib_plots(
                 plt.title("Distribution of Trial Phases")
                 plt.figtext(0.5, 0.01, caption, ha="center", fontsize=9)
                 plt.tight_layout()
-                
-                plt.savefig(output_dir / f"phase_distribution_{timestamp}.png", dpi=300)
+                png_path = output_dir / f"phase_distribution_{timestamp}.png"
+                plt.savefig(png_path, dpi=300)
+                upload_to_gcs(str(png_path), f"runs/{timestamp}/figures/phase_distribution_{timestamp}.png")
                 plt.close()
             else:
                 logger.warning("Skipping phase distribution plot: no valid data after filtering")
@@ -910,24 +856,23 @@ def generate_static_matplotlib_plots(
             logger.warning("Skipping phase distribution plot: phase column missing")
     except Exception as e:
         logger.error(f"Error creating phase distribution plot: {e}")
-    
     # 3. Bar chart of top targets
     try:
         if 'targets' in df.columns:
             target_counts = generate_target_counts(df)
-            
             if not target_counts.empty:
                 plt.figure(figsize=(12, 8))
                 bars = plt.barh(
                     target_counts["target"][::-1], target_counts["count"][::-1]
-                )  # Reverse order for better visualization
+                )
                 plt.title("Top 30 Protein Targets in Clinical Trials")
                 plt.xlabel("Number of Trials")
                 plt.ylabel("Target")
                 plt.figtext(0.5, 0.01, caption, ha="center", fontsize=9)
                 plt.tight_layout()
-                
-                plt.savefig(output_dir / f"top_targets_{timestamp}.png", dpi=300)
+                png_path = output_dir / f"top_targets_{timestamp}.png"
+                plt.savefig(png_path, dpi=300)
+                upload_to_gcs(str(png_path), f"runs/{timestamp}/figures/top_targets_{timestamp}.png")
                 plt.close()
             else:
                 logger.warning("Skipping top targets plot: no valid data after filtering")
@@ -935,11 +880,9 @@ def generate_static_matplotlib_plots(
             logger.warning("Skipping top targets plot: 'targets' column missing")
     except Exception as e:
         logger.error(f"Error creating top targets plot: {e}")
-    
     # Add new static plots
     plot_top_sponsors(df, output_dir, top_n=30, timestamp=timestamp)
     plot_status_distribution(df, output_dir, timestamp=timestamp)
-    
     logger.info("Static plots generated")
 
 
@@ -1085,14 +1028,14 @@ def analyze_trials(
 
     # Create plots - catch any exceptions so the pipeline doesn't fail
     try:
-        plots = create_plots(df)
+        plots = create_plots(df, timestamp=timestamp)
     except Exception as e:
         logger.error(f"Error creating plots: {e}")
         plots = {}
     
     # Create static plots - catch any exceptions
     try:
-        generate_static_matplotlib_plots(df)
+        generate_static_matplotlib_plots(df, timestamp=timestamp)
     except Exception as e:
         logger.error(f"Error generating static plots: {e}")
     
@@ -1259,7 +1202,9 @@ def plot_age_quartiles_box(df, output_dir, timestamp):
     plt.xlabel("Age Type")
     plt.ylabel("Age (years)")
     plt.tight_layout()
-    plt.savefig(output_dir / f"age_quartiles_box_{timestamp}.png", dpi=300)
+    with tempfile.NamedTemporaryFile(suffix=f"_age_quartiles_box_{timestamp}.png", delete=True) as tmp_png:
+        plt.savefig(tmp_png.name, dpi=300)
+        upload_to_gcs(tmp_png.name, f"runs/{timestamp}/figures/age_quartiles_box_{timestamp}.png")
     plt.close()
 
 def plot_enrollment_quartiles_box(df, output_dir, timestamp):
@@ -1278,7 +1223,9 @@ def plot_enrollment_quartiles_box(df, output_dir, timestamp):
     plt.title('Enrollment Distribution (Boxplot)')
     plt.xlabel('Enrollment Count')
     plt.tight_layout()
-    plt.savefig(output_dir / f"enrollment_quartiles_box_{timestamp}.png", dpi=300)
+    with tempfile.NamedTemporaryFile(suffix=f"_enrollment_quartiles_box_{timestamp}.png", delete=True) as tmp_png:
+        plt.savefig(tmp_png.name, dpi=300)
+        upload_to_gcs(tmp_png.name, f"runs/{timestamp}/figures/enrollment_quartiles_box_{timestamp}.png")
     plt.close()
 
 def generate_treatment_details_table(df: pd.DataFrame, output_dir: Optional[Path] = None, timestamp: Optional[str] = None) -> Optional[Path]:
@@ -1308,10 +1255,10 @@ def generate_treatment_details_table(df: pd.DataFrame, output_dir: Optional[Path
     os.makedirs(output_dir, exist_ok=True)
     if timestamp is None:
         timestamp = get_timestamp()
-    html_path = output_dir / f"treatment_details_{timestamp}.html"
-    table_df.to_html(html_path, index=False, escape=False)
-    logger.info(f"Saved treatment details table to {html_path}")
-    return html_path
+    with tempfile.NamedTemporaryFile(suffix=f"_treatment_details_{timestamp}.html", delete=True) as tmp_html:
+        table_df.to_html(tmp_html.name, index=False, escape=False)
+        upload_to_gcs(tmp_html.name, f"runs/{timestamp}/figures/treatment_details_{timestamp}.html")
+    return f"runs/{timestamp}/figures/treatment_details_{timestamp}.html"
 
 def generate_llm_insights(df: pd.DataFrame, top_primary_clusters=None, top_secondary_clusters=None, primary_outcomes=None, secondary_outcomes=None, categorized_outcomes=None) -> str:
     """

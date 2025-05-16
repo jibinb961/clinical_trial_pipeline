@@ -11,6 +11,7 @@ from datetime import datetime
 from functools import wraps
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional, TypeVar, cast
+import os
 
 import aiohttp
 from tenacity import (
@@ -19,6 +20,7 @@ from tenacity import (
     stop_after_attempt,
     wait_exponential,
 )
+from google.cloud import storage
 
 from src.pipeline.config import settings
 
@@ -215,4 +217,48 @@ async def fetch_with_retry(
     return await retry_async(
         _fetch, 
         max_attempts=settings.ctgov.max_retries
-    ) 
+    )
+
+
+def upload_to_gcs(local_path: str, gcs_path: str, bucket_name: str = None):
+    """
+    Upload a file to Google Cloud Storage.
+
+    Args:
+        local_path (str): Path to the local file.
+        gcs_path (str): Path in the bucket (e.g., 'runs/{timestamp}/file.csv').
+        bucket_name (str, optional): GCS bucket name. If None, uses GCS_BUCKET env variable.
+    """
+    if bucket_name is None:
+        bucket_name = os.environ.get("GCS_BUCKET")
+        if not bucket_name:
+            raise ValueError("GCS_BUCKET environment variable not set.")
+
+    client = storage.Client()
+    bucket = client.bucket(bucket_name)
+    blob = bucket.blob(gcs_path)
+    blob.upload_from_filename(local_path)
+    logger.info(f"Uploaded {local_path} to gs://{bucket_name}/{gcs_path}")
+
+
+def download_from_gcs(gcs_path: str, local_path: str, bucket_name: str = None):
+    """
+    Download a file from Google Cloud Storage to a local path.
+
+    Args:
+        gcs_path (str): Path in the bucket (e.g., 'cache/drug_cache.sqlite').
+        local_path (str): Local file path to save the downloaded file.
+        bucket_name (str, optional): GCS bucket name. If None, uses GCS_BUCKET env variable.
+    """
+    if bucket_name is None:
+        bucket_name = os.environ.get("GCS_BUCKET")
+        if not bucket_name:
+            raise ValueError("GCS_BUCKET environment variable not set.")
+    client = storage.Client()
+    bucket = client.bucket(bucket_name)
+    blob = bucket.blob(gcs_path)
+    if blob.exists():
+        blob.download_to_filename(local_path)
+        logger.info(f"Downloaded gs://{bucket_name}/{gcs_path} to {local_path}")
+    else:
+        logger.info(f"GCS file gs://{bucket_name}/{gcs_path} does not exist. Skipping download.") 
