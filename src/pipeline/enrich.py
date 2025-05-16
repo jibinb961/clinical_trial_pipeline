@@ -366,20 +366,17 @@ def apply_enrichment_to_trials(trials_df: pd.DataFrame, drug_info: Dict[str, Dic
             enriched_df.at[i, "modalities"] = modalities
             enriched_df.at[i, "targets"] = targets
             enriched_df.at[i, "enrichment_sources"] = sources
-    # Flatten list-of-lists in modalities, targets, enrichment_sources
-    def flatten_list_of_lists(lst):
-        if not isinstance(lst, list):
-            return [lst]
-        flat = []
-        for item in lst:
-            if isinstance(item, list):
-                flat.extend(item)
-            else:
-                flat.append(item)
-        return flat
+    # --- PATCH: Ensure all list columns are lists or None ---
+    def ensure_list_or_none(val):
+        if val is None or (isinstance(val, float) and pd.isna(val)):
+            return None
+        if isinstance(val, list):
+            return val
+        return [val]
     for col in ["modalities", "targets", "enrichment_sources"]:
         if col in enriched_df.columns:
-            enriched_df[col] = enriched_df[col].apply(flatten_list_of_lists)
+            enriched_df[col] = enriched_df[col].apply(ensure_list_or_none)
+    # --- END PATCH ---
     if timestamp is None:
         from src.pipeline.utils import get_timestamp
         timestamp = get_timestamp()

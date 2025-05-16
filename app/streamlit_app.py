@@ -1,4 +1,6 @@
-import streamlit as st
+"""Streamlit dashboard for visualizing clinical trials data."""
+
+import glob
 import os
 from pathlib import Path
 import tempfile
@@ -158,6 +160,9 @@ def main():
     st.subheader("Release Files (Markdown, CSV, etc.)")
     if release_files:
         for blob in sorted(release_files, key=lambda b: b.name):
+            # Skip demo.md files
+            if Path(blob.name).name.lower() == "demo.md":
+                continue
             col1, col2 = st.columns([3,1])
             with col1:
                 if blob.name.endswith(".md"):
