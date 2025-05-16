@@ -51,11 +51,12 @@ async def extract_trials_task(
 
 
 @task(name="transform_clinical_trials")
-def transform_trials_task(studies: List[Dict]) -> pd.DataFrame:
+def transform_trials_task(studies: List[Dict], timestamp: Optional[str] = None) -> pd.DataFrame:
     """Transform raw clinical trial data into a structured DataFrame.
     
     Args:
         studies: List of clinical trial studies
+        timestamp: Timestamp string for file naming
         
     Returns:
         DataFrame with transformed clinical trial data
@@ -63,7 +64,7 @@ def transform_trials_task(studies: List[Dict]) -> pd.DataFrame:
     logger = get_run_logger()
     
     logger.info("Transforming clinical trial data")
-    df = transform_clinical_trials(studies)
+    df = transform_clinical_trials(studies, timestamp)
     
     logger.info(f"Transformed data with {len(df)} rows")
     return df
@@ -109,13 +110,14 @@ async def enrich_drugs_task(drug_names: Set[str]) -> Dict:
 
 @task(name="apply_drug_enrichment")
 def apply_enrichment_task(
-    trials_df: pd.DataFrame, drug_info: Dict
+    trials_df: pd.DataFrame, drug_info: Dict, timestamp: Optional[str] = None
 ) -> pd.DataFrame:
     """Apply drug enrichment data to trials DataFrame.
     
     Args:
         trials_df: DataFrame with clinical trial data
         drug_info: Dictionary mapping drug names to their enrichment information
+        timestamp: Timestamp string for file naming
         
     Returns:
         Enriched DataFrame
@@ -123,7 +125,7 @@ def apply_enrichment_task(
     logger = get_run_logger()
     
     logger.info("Applying drug enrichment to trials data")
-    enriched_df = apply_enrichment_to_trials(trials_df, drug_info)
+    enriched_df = apply_enrichment_to_trials(trials_df, drug_info, timestamp)
     
     logger.info(f"Applied enrichment to {len(enriched_df)} trials")
     return enriched_df
@@ -131,12 +133,13 @@ def apply_enrichment_task(
 
 @task(name="analyze_trials")
 def analyze_trials_task(
-    enriched_df: pd.DataFrame,
+    enriched_df: pd.DataFrame, timestamp: Optional[str] = None
 ) -> Tuple[Dict, str]:
     """Analyze clinical trial data and generate insights.
     
     Args:
         enriched_df: Enriched DataFrame with clinical trial data
+        timestamp: Timestamp string for file naming
         
     Returns:
         Tuple of (summary stats dictionary, insights text)
@@ -149,7 +152,7 @@ def analyze_trials_task(
     if enriched_df.empty:
         logger.warning("DataFrame is empty, generating minimal analysis output")
     
-    stats, insights = analyze_trials(enriched_df)
+    stats, insights = analyze_trials(enriched_df, timestamp)
     
     logger.info("Analysis completed")
     return stats, insights
@@ -287,15 +290,15 @@ async def clinical_trials_pipeline(
         studies = raw_data.get("studies", [])
     else:
         studies = await extract_trials_task(disease, year_start, year_end)
-        trials_df = transform_trials_task(studies)
+        trials_df = transform_trials_task(studies, timestamp)
     
     # Step 2: Extract and enrich drug data
     drug_names = extract_drugs_task(studies)
     drug_info = await enrich_drugs_task(drug_names)
     
     # Step 3: Apply enrichment and analyze
-    enriched_df = apply_enrichment_task(trials_df, drug_info)
-    stats, insights = analyze_trials_task(enriched_df)
+    enriched_df = apply_enrichment_task(trials_df, drug_info, timestamp)
+    stats, insights = analyze_trials_task(enriched_df, timestamp)
     
     # Step 4: Generate release files
     release_dir = generate_release_files(enriched_df, insights, timestamp)

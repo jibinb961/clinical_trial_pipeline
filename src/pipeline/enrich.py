@@ -330,7 +330,7 @@ async def enrich_drugs(drug_names: Set[str]) -> Dict[str, Dict[str, Any]]:
     return chembl_results
 
 
-def apply_enrichment_to_trials(trials_df: pd.DataFrame, drug_info: Dict[str, Dict[str, str]]) -> pd.DataFrame:
+def apply_enrichment_to_trials(trials_df: pd.DataFrame, drug_info: Dict[str, Dict[str, str]], timestamp: Optional[str] = None) -> pd.DataFrame:
     logger.info("Applying drug enrichment data to trials DataFrame")
     enriched_df = trials_df.copy()
     if "modalities" not in enriched_df.columns:
@@ -380,7 +380,9 @@ def apply_enrichment_to_trials(trials_df: pd.DataFrame, drug_info: Dict[str, Dic
     for col in ["modalities", "targets", "enrichment_sources"]:
         if col in enriched_df.columns:
             enriched_df[col] = enriched_df[col].apply(flatten_list_of_lists)
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+    if timestamp is None:
+        from src.pipeline.utils import get_timestamp
+        timestamp = get_timestamp()
     # Write enriched DataFrame to temp parquet, upload to GCS
     with tempfile.NamedTemporaryFile(suffix=".parquet", delete=True) as tmp_parquet:
         enriched_df.to_parquet(tmp_parquet.name, index=False)
