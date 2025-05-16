@@ -9,30 +9,9 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 import tempfile
 
-import threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
-
-# ---- Health check server (required for Cloud Run TCP probe) ----
-class HealthCheckHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        if self.path == "/healthz":
-            self.send_response(200)
-            self.end_headers()
-            self.wfile.write(b"OK")
-        else:
-            self.send_response(404)
-            self.end_headers()
-
-def start_health_server():
-    server = HTTPServer(("0.0.0.0", 8080), HealthCheckHandler)
-    print("Health check server running on port 8080")
-    server.serve_forever()
-
-threading.Thread(target=start_health_server, daemon=True).start()
 
 import pandas as pd
 from prefect import flow, get_run_logger, task
-from prefect.task_runners import SequentialTaskRunner
 
 from src.pipeline.analysis import analyze_trials
 from src.pipeline.config import settings
@@ -244,7 +223,6 @@ def generate_release_files(
 
 @flow(
     name="clinical_trials_pipeline",
-    task_runner=SequentialTaskRunner(),
     description="End-to-end pipeline for clinical trials data analysis",
 )
 async def clinical_trials_pipeline(
