@@ -50,8 +50,6 @@ data/drug_cache.sqlite
 release/*
 !release/.gitkeep
 
-# Poetry
-poetry.lock
 
 # Jupyter
 .ipynb_checkpoints
