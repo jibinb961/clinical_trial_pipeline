@@ -1,6 +1,6 @@
 # Clinical Trials Data Pipeline
 
-An end-to-end data pipeline for extracting, enriching, analyzing, and visualizing clinical trial data from ClinicalTrials.gov.
+An end-to-end, cloud-native data pipeline for extracting, enriching, analyzing, and visualizing clinical trial data from ClinicalTrials.gov.
 
 ## Architecture
 
@@ -42,210 +42,174 @@ graph TD
 
   %% Visualization Layer
   T --> U[Streamlit App - Visualize and Download Artifacts]
-
 ```
 
+---
 
-## Features
+## Cloud-Native Workflow Overview
 
-* ✅ Extracts **industry-sponsored**, **interventional**, human studies for a specified disease
-* 🧠 Enriches interventions with **drug modality and target info** using:
+- **Source code** is maintained on GitHub.
+- **CI/CD**: On every code push, a GitHub Actions pipeline builds a Docker image and pushes it to Google Artifact Registry, ensuring the latest image is always available for deployment.
+- **Orchestration**: A self-hosted Prefect server runs on Render (with a PostgreSQL database for persistence). A Cloud Run work pool is registered with Prefect.
+- **Deployment**: When a run is scheduled, Prefect triggers a Google Cloud Run Job, which spins up a container using the latest Docker image from Artifact Registry.
+- **Pipeline Execution**: The containerized pipeline fetches clinical trial data, enriches drug information (using a GCS-hosted SQLite cache, ChEMBL API, and Google Gemini), generates outputs, and uploads all artifacts to a run-specific folder in Google Cloud Storage.
+- **Visualization**: A Streamlit app visualizes and allows download of all pipeline artifacts directly from GCS.
 
-  * 🔬 Primary: ChEMBL Python client
-  * 🤖 Fallback: Google Gemini API
-* 📦 Caches enrichment to **SQLite** to avoid redundant lookups
-* 📊 Generates **interactive (Plotly)** and **static (Matplotlib)** visualizations
-* 📝 Produces detailed **LLM-based insights reports** with Gemini
-* ⚙️ Containerized using **Docker** and deployed with **GitHub Actions**
-* ☁️ Orchestrated using **Prefect Cloud** (optionally migratable to Airflow or GKE)
-* 📁 Release artifacts are stored locally or in cloud-ready structure
+---
 
-## Quick Start
+## Quick Start: Cloud-Native Setup
 
-### Prerequisites
+### 1. Prerequisites
+- Google Cloud Project with Artifact Registry, Cloud Run, and GCS enabled
+- [Render.com](https://render.com/) account for hosting Prefect server
+- Python 3.12, Docker, and [Poetry](https://python-poetry.org/) for local development
+- Prefect Cloud account (optional, for UI and scheduling)
 
-* Python 3.12
-* [Poetry](https://python-poetry.org/) for dependency management
-* [Prefect 2](https://docs.prefect.io/) for orchestration
-* Google Gemini API key (used if ChEMBL enrichment fails)
+### 2. CI/CD Pipeline (GitHub Actions)
+- On every push, the pipeline:
+  - Builds a Docker image from the repo
+  - Pushes the image to Google Artifact Registry
+- **Configure secrets** in your GitHub repo for GCP authentication
 
-### Setup
+### 3. Self-Hosted Prefect Server on Render
+- Deploy a Prefect server on Render using the official Docker image
+- Use a managed PostgreSQL database for Prefect persistence
+- Expose the Prefect API endpoint for your agents and UI
+- Register a Cloud Run work pool in your Prefect server
 
-1. Clone the repository
+### 4. Cloud Run Work Pool
+- In Prefect, create a Cloud Run work pool that:
+  - Uses your Artifact Registry Docker image
+  - Has permissions to access GCS and other GCP services
+  - Can receive parameters (disease, year, etc.) at runtime
 
-```bash
-git clone https://github.com/jibinb961/clinical_trial_pipeline.git
-cd clinical_trial_pipeline
-```
+### 5. Environment Variables
+- Set the following environment variables in Prefect Cloud (or Render) and your Cloud Run job:
+  - `DISEASE` (e.g., "Familial Hypercholesterolemia")
+  - `YEAR_START`, `YEAR_END`
+  - `GEMINI_API_KEY` (for Google Gemini fallback)
+  - `MAX_STUDIES`, `MAX_PAGES`
+  - `PREFECT_API_KEY`, `PREFECT_WORKSPACE` (if using Prefect Cloud)
+  - `BASE_PATH` (set to `/app` in Docker, or `.` locally)
+  - `GCS_BUCKET` (your artifact bucket name)
+  - Any other secrets required for GCP and APIs
 
-2. Install dependencies
+### 6. Running the Pipeline
+- Schedule or trigger a run from your Prefect server UI (hosted on Render)
+- The Cloud Run job will:
+  - Fetch clinical trial data from ClinicalTrials.gov
+  - Extract and enrich drug information (using GCS-hosted SQLite cache, ChEMBL API, and Gemini LLM)
+  - Save all results (CSV, Parquet, plots, summaries) to a run-specific folder in your GCS bucket
 
-```bash
-poetry install
-```
+### 7. Visualizing Results
+- Use the provided Streamlit app to:
+  - Browse available pipeline runs
+  - View and download all generated artifacts (plots, data files, summaries) directly from GCS
 
-3. Configure environment variables (or create a `.env` file)
+---
+
+## Example Environment Variables
 
 ```bash
 DISEASE="Familial Hypercholesterolemia"
 YEAR_START=2008
 YEAR_END=2023
 GEMINI_API_KEY="your-api-key"
-MAX_STUDIES = 100 # can be modified
-MAX_PAGES=2 #can be modified
-PREFECT_API_KEY="your-prefect-api-ke"
-PREFECT_WORKSPACE="workspace_slug_here"
-
-# When running inside Docker
+MAX_STUDIES=100
+MAX_PAGES=2
+PREFECT_API_KEY="your-prefect-api-key"
+PREFECT_WORKSPACE="your-org/your-workspace"
 BASE_PATH=/app
-
-# When running locally, comment it out or set to current dir
- BASE_PATH=.
-
+GCS_BUCKET=clinical-trial-pipeline-artifacts-bucket
 ```
-
-4. Run the pipeline
-
-```bash
-poetry run python -m src.pipeline.flow
-```
-
-### Using Docker (with Prefect Cloud Agent)
-
-```bash
-docker-compose up
-```
-
-## CI/CD (GitHub Actions)
-
-This repository includes a GitHub Actions workflow that:
-
-* Runs tests with Pytest
-* Builds and validates Docker image
-* Publishes image to **GitHub Container Registry (GHCR)**
-
-> You'll need to configure `secrets.GITHUB_TOKEN` for GHCR push access.
-
-## Output Organization & Run Directories
-
-Each pipeline run creates output directories under `data/`, named as:
-
-Inside each sub directory, outputs are organized into subfolders:
-- `figures/` — All generated plots (PNG, HTML, etc.)
-- `processed/` — Processed data files (CSV, Parquet, enrichment reports, etc.)
-- `raw/` — Raw filtered data (JSON)
-- `cache/` — (If used) Any run-specific cache files
-
-### Example File Structure
-
-```
-clinical_trial_pipeline/
-├── data/
-│   ├── figures/
-│   │   ├── age_quartiles_box_<timestamp>.png
-│   │   ├── modality_by_phase_distribution_<timestamp>.html
-│   │   └── ... (other plots and HTMLs)
-│   ├── processed/
-│   │   ├── clinical_trials_<timestamp>.csv
-│   │   ├── enrichment_report_<timestamp>.csv
-│   │   ├── trials_enriched_<timestamp>.parquet
-│   │   ├── insights_<timestamp>.md
-│   │   └── ... (other processed outputs)
-│   ├── raw/
-│   │   ├── <timestamp>/
-│   │   │   └── filtered_<timestamp>.json
-│   │   └── .gitkeep
-│   ├── cache/
-│   └── drug_cache.sqlite
-├── app/
-│   └── streamlit_app.py
-├── src/
-│   └── pipeline/
-│       ├── flow.py
-│       ├── etl.py
-│       ├── enrich.py
-│       ├── analysis.py
-│       └── ...
-└── ...
-```
-
-- All **figures** (plots, HTMLs, PNGs) are in `data/figures/`.
-- All **processed data** (CSV, Parquet, enrichment reports, insights) are in `data/processed/`.
-- **Raw data** for each run is in a timestamped subfolder under `data/raw/`.
-- **Cache** and **SQLite drug cache** are in `data/cache/` and `data/drug_cache.sqlite`.
 
 ---
 
-## Interactive Dashboard
+## Running the Streamlit Application Locally
 
-A Streamlit dashboard is provided for interactive exploration and visualization of pipeline outputs.
+### 1. Set Up Google Cloud Credentials
+- Download your GCP service account key as `service_account.json`.
+- Place it in a secure location (e.g., the project root or a `.secrets` folder).
+- Export the path to this file as an environment variable:
 
-### Usage
+```bash
+export GOOGLE_APPLICATION_CREDENTIALS="/absolute/path/to/service_account.json"
+```
 
-1. **Start the dashboard:**
-   ```bash
-   poetry run streamlit run app/streamlit_app.py
-   ```
+This is required for the Streamlit app (and any local code) to access Google Cloud Storage.
 
+### 2. Poetry Setup
+- Install [Poetry](https://python-poetry.org/) if you haven't already:
 
-2. **Features:**
-   - **Run Selection:** Use the sidebar dropdown to select a specific pipeline run (by disease and timestamp).
-   - **File Type & File Selection:** After selecting a run, choose the file type (HTML, PNG, Markdown, CSV) and then the specific file to view.
-   - **Visualization:** The dashboard will render the selected file appropriately (interactive plots, images, tables, or markdown).
+```bash
+pip install poetry
+```
+
+- Install dependencies:
+
+```bash
+poetry install
+```
+
+### 3. Run the Streamlit App
+- Activate the Poetry shell (optional, but recommended):
+
+```bash
+poetry shell
+```
+
+- Run the Streamlit dashboard:
+
+```bash
+poetry run streamlit run app/streamlit_app.py
+```
+
+- The app will open in your browser. You can browse and visualize all pipeline artifacts stored in your GCS bucket.
+
+---
+
+## Repository Folder Structure
+
+```
+clinical_trial_pipeline/
+├── app/
+│   └── streamlit_app.py         # Streamlit dashboard for artifact visualization
+├── src/
+│   └── pipeline/
+│       ├── flow.py              # Main pipeline orchestration
+│       ├── etl.py               # ETL logic
+│       ├── enrich.py            # Drug enrichment logic
+│       ├── analysis.py          # Analysis and plotting
+│       ├── utils.py             # Utility functions (GCS, timestamp, etc.)
+│       └── ...
+├── data/                        # (Optional) Local output directory for artifacts
+│   ├── figures/                 # Generated plots (PNG, HTML, etc.)
+│   ├── processed/               # Processed data files (CSV, Parquet, etc.)
+│   ├── raw/                     # Raw data (JSON)
+│   ├── cache/                   # Run-specific cache files
+│   └── drug_cache.sqlite        # Drug cache database
+├── README.md                    # Project documentation
+├── poetry.lock                  # Poetry lock file
+├── pyproject.toml               # Poetry project file
+├── service_account.json         # (Not committed) GCP credentials for local dev
+└── ...
+```
+
+- **app/**: Streamlit dashboard code.
+- **src/pipeline/**: All pipeline logic (ETL, enrichment, analysis, orchestration).
+- **data/**: (Optional) Local outputs if running outside the cloud.
+- **service_account.json**: Your GCP credentials (never commit this to git!).
 
 ---
 
 ## Troubleshooting
-
-- **FileNotFoundError during plotting:**  
-  If you see errors about missing directories when saving plots, ensure that all output subdirectories (e.g., `figures/`) are created before writing files. You can add:
-  ```python
-  output_dir.mkdir(parents=True, exist_ok=True)
-  ```
-  before any file save operation.
-
-- **Environment Variables:**  
-  Make sure all required environment variables are set, especially when running in Docker or CI/CD.
-
-- **Prefect Cloud:**  
-  If using Prefect Cloud, ensure your API key and workspace slug are set correctly.
+- **FileNotFoundError during plotting:** Ensure all output subdirectories are created before saving files.
+- **Prefect/Cloud Run errors:** Check that all environment variables and GCP permissions are set correctly.
+- **Streamlit not showing artifacts:** Make sure your GCS bucket and artifact paths are correct and public/private as needed.
 
 ---
 
 ## Contributing
-
 Contributions are welcome! Please open issues or pull requests for bug fixes, new features, or documentation improvements.
-
-## Prefect Cloud with Docker
-
-You can orchestrate and schedule pipeline runs using [Prefect Cloud](https://www.prefect.io/cloud/) and Docker.
-
-### Steps
-
-1. **Create a Prefect Cloud Account:**
-   - Go to [Prefect Cloud](https://app.prefect.cloud/) and sign up.
-   - Create a workspace.
-
-2. **Get Your API Key and Workspace Slug:**
-   - In Prefect Cloud, go to your account settings and generate a `PREFECT_API_KEY`.
-   - Find your workspace slug (e.g., `your-org/your-workspace`).
-
-3. **Set Environment Variables:**
-   - Add these to your `.env` file or environment:
-     ```bash
-     PREFECT_API_KEY=your-prefect-api-key
-     PREFECT_WORKSPACE=your-org/your-workspace
-     ```
-
-4. **Run with Docker Compose:**
-   - Build and start the agent and deployment:
-     ```bash
-     docker-compose up -d
-     ```
-   - This will build the Docker image, push the deployment to Prefect Cloud, and start a Prefect agent.
-
-5. **Schedule and Monitor Runs:**
-   - Go to your Prefect Cloud workspace.
-   - You can now schedule pipeline runs, monitor status, and view logs directly from the Prefect UI.
 
 ---
