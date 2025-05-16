@@ -125,6 +125,34 @@ GCS_BUCKET=clinical-trial-pipeline-artifacts-bucket
 
 ---
 
+## Prefect Orchestration: Work Pool, Deployment, and Worker
+
+### 1. Create a Cloud Run Work Pool
+
+Run this command to create a Prefect work pool of type Cloud Run:
+
+```bash
+poetry run prefect work-pool create --type cloud-run clinical-pipeline-pool
+```
+
+### 2. Deploy the Pipeline to the Prefect Server
+
+Deploy your pipeline (using the `prefect.yaml` file) to the Prefect server:
+
+```bash
+poetry run prefect deploy --name clinical-flow-deploy
+```
+
+### 3. Start the Prefect Worker
+
+Start a Prefect worker that will listen to the Cloud Run work pool:
+
+```bash
+prefect worker start --pool 'clinical-pipeline-pool'
+```
+
+---
+
 ## Running the Streamlit Application Locally
 
 ### 1. Set Up Google Cloud Credentials
