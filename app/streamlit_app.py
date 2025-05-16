@@ -1,6 +1,4 @@
-"""Streamlit dashboard for visualizing clinical trials data."""
-
-import glob
+import streamlit as st
 import os
 from pathlib import Path
 import tempfile
