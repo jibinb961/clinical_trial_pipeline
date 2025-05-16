@@ -1,0 +1,32 @@
+name: clinical-pipeline
+prefect-version: 2.20.18
+
+build:
+- prefect_docker.deployments.steps.build_docker_image:
+    id: build_image
+    image_name: us-central1-docker.pkg.dev/lawless-outlet-459820-f2/clinical-pipeline/clinical-pipeline
+    tag: latest
+    dockerfile: auto
+    platform: linux/amd64
+
+push:
+- prefect_docker.deployments.steps.push_docker_image:
+    image_name: '{{ build_image.image_name }}'
+    tag: '{{ build_image.tag }}'
+
+pull:
+- prefect.deployments.steps.set_working_directory:
+    directory: /app
+
+deployments:
+- name: clinical-flow-deploy
+  entrypoint: src/pipeline/flow.py:clinical_trials_pipeline
+  parameters: {}
+  work_pool:
+    name: clinical-pipeline-pool
+    job_variables:
+      image: '{{ build_image.image }}'
+      env:
+        GEMINI_API_KEY: AIzaSyChtGQCOELmrOaYpq6VyRzOCWJADFrftwE
+        CACHE_DB_PATH: /tmp/drug_cache.sqlite
+        PREFECT_DEPLOYMENT_BUILD: "true"

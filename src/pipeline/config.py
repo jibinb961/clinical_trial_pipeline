@@ -33,7 +33,12 @@ class Paths(BaseModel):
 
     @validator("*", pre=True)
     def create_directories(cls, v: Path) -> Path:
-        v.mkdir(parents=True, exist_ok=True)
+        # Skip directory creation during Prefect deploy builds
+        if os.getenv("PREFECT_DEPLOYMENT_BUILD") != "true":
+            try:
+                v.mkdir(parents=True, exist_ok=True)
+            except PermissionError:
+                pass  # Skip if mkdir is not permitted (like read-only fs)
         return v
 
     @classmethod
@@ -127,14 +132,3 @@ class Settings(BaseSettings):
 
 # Create singleton instance
 settings = Settings() 
-print("settings.base_path:", settings.base_path)
-print("Cache DB path:", settings.cache_db_path)
-print("settings.paths.base:", settings.paths.base)
-print("settings.disease:", settings.disease)
-print("settings.year_start:", settings.year_start)
-print("settings.year_end:", settings.year_end)
-print("settings.paths.raw_data:", settings.paths.raw_data)
-print("settings.paths.processed_data:", settings.paths.processed_data)
-print("settings.paths.cache:", settings.paths.cache)
-print("settings.paths.figures:", settings.paths.figures)
-print("settings.paths.release:", settings.paths.release)
