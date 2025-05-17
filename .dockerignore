@@ -1,0 +1,74 @@
+# Version control
+.git/
+.gitignore
+.github/
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.installed.cfg
+*.egg
+.mypy_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+venv/
+ENV/
+.env
+.venv
+env/
+
+# Data files (keep only what's needed for the app)
+data/raw/*
+data/processed/*
+data/figures/*
+data/drug_cache.sqlite
+data/cache/
+*.csv
+*.parquet
+*.pkl
+*.sqlite
+*.db
+
+# Development and test files
+tests/
+debug/
+release/
+.vscode/
+.idea/
+*.ipynb
+.ipynb_checkpoints/
+
+# Documentation
+docs/
+*.md
+LICENSE
+
+# OS specific files
+.DS_Store
+*.swp
+*~
+
+# Logs and temporary files
+*.log
+tmp/
+logs/
+
+# Build files
+build/
+dist/
+*.egg-info/
+
+# Prefect specific
+.prefect/
+.prefectignore
+prefect-artifacts/
+
+# Docker files (no need to include these in the build)
+docker-compose.yml 
