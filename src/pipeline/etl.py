@@ -456,11 +456,6 @@ def transform_clinical_trials(
     with tempfile.NamedTemporaryFile(suffix=".parquet", delete=True) as tmp_parquet:
         df.to_parquet(tmp_parquet.name, index=False)
         upload_to_gcs(tmp_parquet.name, f"runs/{timestamp}/trials_{timestamp}.parquet")
-    # Write DataFrame to temp CSV, upload to GCS
-    with tempfile.NamedTemporaryFile(suffix=".csv", delete=True) as tmp_csv:
-        df.to_csv(tmp_csv.name, index=False)
-        upload_to_gcs(tmp_csv.name, f"runs/{timestamp}/clinical_trials_{timestamp}.csv")
-    logger.info(f"Transformed {len(df)} studies into tabular data and uploaded to GCS runs/{timestamp}/trials_{timestamp}.parquet and clinical_trials_{timestamp}.csv")
     return df
 
 

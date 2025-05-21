@@ -220,6 +220,13 @@ def generate_release_files(
         tmp_demo.write("- Suggest potential follow-up analyses\n")
         tmp_demo.flush()
         upload_to_gcs(tmp_demo.name, f"{gcs_base}/demo.md")
+    # Upload filtered JSON to release directory if it exists
+    from src.pipeline.utils import get_raw_data_path
+    import shutil
+    raw_path = get_raw_data_path(timestamp)
+    filtered_file = raw_path / f"filtered_{timestamp}.json"
+    if filtered_file.exists():
+        upload_to_gcs(str(filtered_file), f"{gcs_base}/filtered_{timestamp}.json")
     logger.info(f"Generated release files and uploaded to GCS under {gcs_base}")
     return Path(gcs_base)
 
