@@ -14,13 +14,13 @@ import aiohttp
 import pandas as pd
 from sqlalchemy import Column, String, Table, create_engine, insert, select
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 from tqdm.asyncio import tqdm
 from chembl_webresource_client.new_client import new_client
 from chembl_webresource_client.settings import Settings
 
 from src.pipeline.config import settings
-from src.pipeline.gemini_utils import query_gemini_for_drug_info, initialize_gemini, batch_query_gemini
+from src.pipeline.gemini_utils import query_gemini_for_drug_info, initialize_gemini, batch_query_gemini, query_gemini_for_drug_grounded_search
 from src.pipeline.utils import log_execution_time, logger, retry_async, upload_to_gcs
 
 import re
@@ -39,13 +39,17 @@ class DrugCache(Base):
     modality = Column(String, nullable=True)
     target = Column(String, nullable=True)
     source = Column(String, nullable=True)
+    uri = Column(String, nullable=True)  # NEW: URI for grounded search
     timestamp = Column(String, nullable=True)
+
+
+# --- SQLAlchemy global engine/session ---
+engine = create_engine(f"sqlite:///{settings.cache_db_path}")
+SessionLocal = sessionmaker(bind=engine)
 
 
 def setup_drug_cache_db() -> None:
     """Set up the SQLite database for drug caching."""
-    # STEP 1: Set up SQLite DB for caching drug enrichment data
-    engine = create_engine(f"sqlite:///{settings.cache_db_path}")
     Base.metadata.create_all(engine)
     logger.info(f"Drug cache database setup at {settings.cache_db_path}")
 
@@ -59,9 +63,8 @@ def get_cached_drug(drug_name: str) -> Optional[Dict[str, str]]:
     Returns:
         Dictionary with modality and target, or None if not in cache
     """
-    engine = create_engine(f"sqlite:///{settings.cache_db_path}")
     logger.info(f"[CACHE] Lookup for drug: '{drug_name}' in cache DB: {settings.cache_db_path}")
-    with Session(engine) as session:
+    with SessionLocal() as session:
         result = session.execute(
             select(DrugCache).where(DrugCache.name == drug_name)
         ).first()
@@ -74,6 +77,7 @@ def get_cached_drug(drug_name: str) -> Optional[Dict[str, str]]:
                 "modality": drug.modality,
                 "target": drug.target,
                 "source": drug.source,
+                "uri": drug.uri,
             }
     
     logger.info(f"[CACHE] MISS: '{drug_name}' not found in cache")
@@ -81,7 +85,7 @@ def get_cached_drug(drug_name: str) -> Optional[Dict[str, str]]:
 
 
 def cache_drug(
-    drug_name: str, modality: Any, target: Any, source: str
+    drug_name: str, modality: Any, target: Any, source: str, uri: Optional[str] = None
 ) -> None:
     """Cache drug information in SQLite database.
 
@@ -90,6 +94,7 @@ def cache_drug(
         modality: Drug modality (can be string or list)
         target: Drug target (can be string or list)
         source: Source of the information
+        uri: URI for grounded search
     """
     # ✅ Convert lists to comma-separated strings
     if isinstance(modality, list):
@@ -97,14 +102,14 @@ def cache_drug(
     if isinstance(target, list):
         target = ", ".join(target)
 
-    engine = create_engine(f"sqlite:///{settings.cache_db_path}")
-    logger.info(f"[CACHE] WRITE: '{drug_name}' -> modality: '{modality}', target: '{target}', source: '{source}' in cache DB: {settings.cache_db_path}")
-    with Session(engine) as session:
+    logger.info(f"[CACHE] WRITE: '{drug_name}' -> modality: '{modality}', target: '{target}', source: '{source}', uri: '{uri}' in cache DB: {settings.cache_db_path}")
+    with SessionLocal() as session:
         drug = DrugCache(
             name=drug_name,
             modality=modality,
             target=target,
             source=source,
+            uri=uri,
             timestamp=datetime.now().isoformat(),
         )
 
@@ -117,6 +122,7 @@ def cache_drug(
             existing[0].modality = modality
             existing[0].target = target
             existing[0].source = source
+            existing[0].uri = uri
             existing[0].timestamp = datetime.now().isoformat()
         else:
             session.add(drug)
@@ -240,26 +246,25 @@ def preprocess_drug_name(drug_name):
 async def enrich_drugs(drug_names: Set[str]) -> Dict[str, Dict[str, Any]]:
     logger.info(f"[CACHE] Using cache DB at: {settings.cache_db_path}")
     setup_drug_cache_db()
-    logger.info(f"Enriching {len(drug_names)} drugs with ChEMBL, then Gemini batch fallback")
+    logger.info(f"Enriching {len(drug_names)} drugs with ChEMBL, then Gemini grounded search fallback")
     chembl_results = {}
     unresolved = set()
     placebo_set = set()
     combo_map = {}
-    # --- NEW: Track all preprocessed drug names ---
     all_preprocessed_drugs = set()
     for orig_name in tqdm(drug_names, desc="Preprocessing and ChEMBL lookup"):
         parts, origs, normed, _ = preprocess_drug_name(orig_name)
         all_preprocessed_drugs.update(parts)
         if len(parts) > 1:
             combo_map[orig_name] = parts
-        modalities, targets, sources = [], [], []
+        modalities, targets, sources, uris = [], [], [], []
         for part in parts:
-            # Placebo strict handling
             if 'placebo' in part.lower() or 'simulant' in part.lower():
                 modalities.append('placebo')
                 targets.append('placebo')
                 sources.append('placebo')
-                cache_drug(part, 'placebo', 'placebo', 'placebo')
+                uris.append(None)
+                cache_drug(part, 'placebo', 'placebo', 'placebo', None)
                 placebo_set.add(part)
             else:
                 cached = get_cached_drug(part)
@@ -267,65 +272,109 @@ async def enrich_drugs(drug_names: Set[str]) -> Dict[str, Dict[str, Any]]:
                     modalities.append(cached['modality'])
                     targets.append(cached['target'])
                     sources.append(cached['source'])
+                    uris.append(cached.get('uri'))
                 else:
                     info = query_chembl_client(part)
                     if info and info['modality'] != 'Unknown' and info['target'] != 'Unknown':
                         modalities.append(info['modality'])
                         targets.append(info['target'])
                         sources.append('ChEMBL')
-                        cache_drug(part, info['modality'], info['target'], 'ChEMBL')
+                        uris.append(None)
+                        cache_drug(part, info['modality'], info['target'], 'ChEMBL', None)
                     else:
                         modalities.append('Unknown')
                         targets.append('Unknown')
                         sources.append('Unknown')
+                        uris.append(None)
                         unresolved.add(part)
-        # Store as list for combos, single value for single drugs
         if len(parts) > 1:
-            chembl_results[orig_name] = {"modality": modalities, "target": targets, "source": sources}
+            chembl_results[orig_name] = {"modality": modalities, "target": targets, "source": sources, "uri": uris}
         else:
-            chembl_results[orig_name] = {"modality": modalities[0], "target": targets[0], "source": sources[0]}
-    # Stage 2: Gemini batch (skip placebos)
+            chembl_results[orig_name] = {"modality": modalities[0], "target": targets[0], "source": sources[0], "uri": uris[0]}
+    # --- Gemini grounded search fallback ---
     unresolved_for_gemini = [name for name in unresolved if 'placebo' not in name.lower() and 'simulant' not in name.lower()]
-    gemini_results = await batch_query_gemini(unresolved_for_gemini)
-    for name, info in gemini_results.items():
-        # Always set source to Gemini, even if Unknown
-        info['source'] = 'Gemini'
-        cache_drug(name, info['modality'], info['target'], 'Gemini')
-    # Merge Gemini results into chembl_results
+    # --- Gemini API rate limiting ---
+    import time
+    from collections import deque
+    gemini_minute_window = deque()
+    gemini_100s_window = deque()
+    gemini_daily_count = 0
+    gemini_daily_limit = 100
+    gemini_results = {}
+    async def rate_limiter():
+        now = time.time()
+        # Remove old timestamps
+        while gemini_minute_window and now - gemini_minute_window[0] > 60:
+            gemini_minute_window.popleft()
+        while gemini_100s_window and now - gemini_100s_window[0] > 100:
+            gemini_100s_window.popleft()
+        # Check limits
+        if len(gemini_minute_window) >= 15 or len(gemini_100s_window) >= 10 or gemini_daily_count >= gemini_daily_limit:
+            return False
+        return True
+    async def wait_for_slot():
+        while not await rate_limiter():
+            logger.info("[Gemini] Rate limit hit, waiting...")
+            await asyncio.sleep(5)
+    for name in tqdm(unresolved_for_gemini, desc="Gemini grounded search", mininterval=1):
+        await wait_for_slot()
+        retries = 0
+        while retries < 5:
+            try:
+                info = await query_gemini_for_drug_grounded_search(name)
+                now = time.time()
+                gemini_minute_window.append(now)
+                gemini_100s_window.append(now)
+                gemini_daily_count += 1
+                if info:
+                    gemini_results[name] = info
+                    cache_drug(name, info['modality'], info['target'], 'Gemini', info.get('uri'))
+                else:
+                    gemini_results[name] = {"modality": "Unknown", "target": "Unknown", "source": "Gemini", "uri": None}
+                    cache_drug(name, "Unknown", "Unknown", "Gemini", None)
+                break
+            except Exception as e:
+                logger.warning(f"[Gemini Retry {retries}] Error for {name}: {e}")
+                await asyncio.sleep(2 ** retries + 0.5)
+                retries += 1
+    # --- Merge Gemini results into chembl_results ---
     for orig_name in drug_names:
         parts, _, _, _ = preprocess_drug_name(orig_name)
         if 'placebo' in orig_name.lower() or 'simulant' in orig_name.lower():
-            chembl_results[orig_name] = {"modality": "placebo", "target": "placebo", "source": "placebo"}
+            chembl_results[orig_name] = {"modality": "placebo", "target": "placebo", "source": "placebo", "uri": None}
         elif len(parts) > 1:
-            # For combos, update unresolved parts with Gemini results
-            modalities, targets, sources = [], [], []
+            modalities, targets, sources, uris = [], [], [], []
             for part in parts:
                 if part in gemini_results:
                     modalities.append(gemini_results[part]['modality'])
                     targets.append(gemini_results[part]['target'])
                     sources.append('Gemini')
+                    uris.append(gemini_results[part].get('uri'))
                 else:
-                    entry = chembl_results.get(orig_name, {"modality": "Unknown", "target": "Unknown", "source": "Unknown"})
+                    entry = chembl_results.get(orig_name, {"modality": "Unknown", "target": "Unknown", "source": "Unknown", "uri": None})
+                    idx = parts.index(part)
                     if isinstance(entry['modality'], list):
-                        idx = parts.index(part)
                         modalities.append(entry['modality'][idx])
                         targets.append(entry['target'][idx])
                         sources.append(entry['source'][idx])
+                        uris.append(entry['uri'][idx] if isinstance(entry['uri'], list) else entry['uri'])
                     else:
                         modalities.append(entry['modality'])
                         targets.append(entry['target'])
                         sources.append(entry['source'])
-            chembl_results[orig_name] = {"modality": modalities, "target": targets, "source": sources}
+                        uris.append(entry['uri'])
+            chembl_results[orig_name] = {"modality": modalities, "target": targets, "source": sources, "uri": uris}
         elif orig_name in gemini_results:
             chembl_results[orig_name] = gemini_results[orig_name]
         elif orig_name in chembl_results:
-            if (chembl_results[orig_name]['modality'] == 'Unknown' or chembl_results[orig_name]['target'] == 'Unknown'):
+            entry = chembl_results[orig_name]
+            if (entry['modality'] == 'Unknown' or entry['target'] == 'Unknown'):
                 if orig_name in unresolved_for_gemini:
-                    chembl_results[orig_name]['source'] = 'Gemini'
-                elif chembl_results[orig_name]['source'] == 'Unknown':
-                    chembl_results[orig_name]['source'] = 'ChEMBL'
+                    entry['source'] = 'Gemini'
+                elif entry['source'] == 'Unknown':
+                    entry['source'] = 'ChEMBL'
         else:
-            chembl_results[orig_name] = {"modality": "Unknown", "target": "Unknown", "source": "Gemini"}
+            chembl_results[orig_name] = {"modality": "Unknown", "target": "Unknown", "source": "Gemini", "uri": None}
     logger.info(f"Completed enrichment of {len(chembl_results)} drugs")
     return chembl_results
 
@@ -339,34 +388,39 @@ def apply_enrichment_to_trials(trials_df: pd.DataFrame, drug_info: Dict[str, Dic
         enriched_df["targets"] = None
     if "enrichment_sources" not in enriched_df.columns:
         enriched_df["enrichment_sources"] = None
+    if "enrichment_uris" not in enriched_df.columns:
+        enriched_df["enrichment_uris"] = None
     def extract_enrichment(interventions: list) -> tuple:
         if not interventions or not isinstance(interventions, list):
-            return [], [], []
-        modalities, targets, sources = [], [], []
+            return [], [], [], []
+        modalities, targets, sources, uris = [], [], [], []
         for drug in interventions:
-            info = drug_info.get(drug, {"modality": "Unknown", "target": "Unknown", "source": "Unknown"})
+            info = drug_info.get(drug, {"modality": "Unknown", "target": "Unknown", "source": "Unknown", "uri": None})
             mod = info.get("modality", "Unknown")
             tar = info.get("target", "Unknown")
             src = info.get("source", "Unknown")
-            # Always wrap in list if not already a list
+            uri = info.get("uri", None)
             if not isinstance(mod, list):
                 mod = [mod]
             if not isinstance(tar, list):
                 tar = [tar]
             if not isinstance(src, list):
                 src = [src]
+            if not isinstance(uri, list):
+                uri = [uri]
             modalities.append(mod)
             targets.append(tar)
             sources.append(src)
-        return modalities, targets, sources
+            uris.append(uri)
+        return modalities, targets, sources, uris
     for i, row in enriched_df.iterrows():
         interventions = row.get("intervention_names")
         if interventions:
-            modalities, targets, sources = extract_enrichment(interventions)
+            modalities, targets, sources, uris = extract_enrichment(interventions)
             enriched_df.at[i, "modalities"] = modalities
             enriched_df.at[i, "targets"] = targets
             enriched_df.at[i, "enrichment_sources"] = sources
-    # Flatten list-of-lists in modalities, targets, enrichment_sources
+            enriched_df.at[i, "enrichment_uris"] = uris
     def flatten_list_of_lists(lst):
         if not isinstance(lst, list):
             return [lst]
@@ -377,42 +431,41 @@ def apply_enrichment_to_trials(trials_df: pd.DataFrame, drug_info: Dict[str, Dic
             else:
                 flat.append(item)
         return flat
-    for col in ["modalities", "targets", "enrichment_sources"]:
+    for col in ["modalities", "targets", "enrichment_sources", "enrichment_uris"]:
         if col in enriched_df.columns:
             enriched_df[col] = enriched_df[col].apply(flatten_list_of_lists)
-    # PATCH: Only generate timestamp if not provided
     if timestamp is None:
         from src.pipeline.utils import get_timestamp
         timestamp = get_timestamp()
     output_path = settings.paths.processed_data / f"trials_enriched_{timestamp}.parquet"
     enriched_df.to_parquet(output_path, index=False)
-    # Also save as CSV
     csv_path = settings.paths.processed_data / f"trials_enriched_{timestamp}.csv"
     enriched_df.to_csv(csv_path, index=False)
     logger.info(f"Saved enriched DataFrame to {output_path} and {csv_path}")
-    # Generate enrichment report CSV
     try:
         rows = []
         for _, row in enriched_df.iterrows():
             nct_id = row.get('nct_id', '')
-            for drug, modality, target, source in zip(
+            for drug, modality, target, source, uri in zip(
                 row.get('intervention_names', []),
                 row.get('modalities', []),
                 row.get('targets', []),
-                row.get('enrichment_sources', [])
+                row.get('enrichment_sources', []),
+                row.get('enrichment_uris', [])
             ):
                 rows.append({
                     "nct_id": nct_id,
                     "drug": drug,
                     "modality": modality,
                     "target": target,
-                    "source": source
+                    "source": source,
+                    "uri": uri
                 })
         report_df = pd.DataFrame(rows)
         for col in ["modality", "target", "source"]:
             if col in report_df.columns:
                 report_df[col] = report_df[col].apply(lambda x: ', '.join(x) if isinstance(x, list) else str(x) if x is not None else "")
-        report_df = report_df.drop_duplicates(subset=["nct_id", "drug", "modality", "target", "source"])
+        report_df = report_df.drop_duplicates(subset=["nct_id", "drug", "modality", "target", "source", "uri"])
         with tempfile.NamedTemporaryFile(suffix=".csv", delete=True) as tmp_csv:
             report_df.to_csv(tmp_csv.name, index=False)
             upload_to_gcs(tmp_csv.name, f"runs/{timestamp}/enrichment_report_{timestamp}.csv")

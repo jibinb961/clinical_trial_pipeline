@@ -12,6 +12,12 @@ import re
 import google.generativeai as genai
 from google.api_core.exceptions import GoogleAPIError
 
+from google import genai
+from google.genai.types import Tool, GenerateContentConfig, GoogleSearch
+
+import asyncio
+from random import uniform
+
 from src.pipeline.config import settings
 from src.pipeline.utils import logger
 
@@ -32,6 +38,117 @@ def initialize_gemini() -> bool:
     except Exception as e:
         logger.error(f"Error initializing Gemini API: {e}")
         return False
+    
+async def query_gemini_for_drug_grounded_search(drug_name: str) -> Optional[Dict[str, str]]:
+    """
+    Use Google Gemini with grounded search to get drug modality and target.
+    
+    Args:
+        drug_name: Name of the drug to query
+
+    Returns:
+        Dictionary with modality, target, source, and grounding URI
+    """
+    if not settings.api_keys.gemini:
+        logger.warning("Gemini API key not set, skipping Gemini query")
+        return None
+
+    logger.debug(f"[Gemini Grounded] Querying for drug: {drug_name}")
+    
+    try:
+        # Configure client
+        client = genai.Client(api_key=settings.api_keys.gemini)
+
+        # Define the Google Search tool
+        google_search_tool = Tool(google_search=GoogleSearch())
+
+        # Build the prompt
+        prompt = f"""
+        You are a pharmacology expert. Your task is to extract the *modality* and *target* of a drug given its name.
+
+        Return a single JSON object with these two keys:
+
+        "modality": Choose one of the following strings (case-sensitive):
+        - "small-molecule"
+        - "monoclonal antibody"
+        - "antibody-drug conjugate"
+        - "protein"
+        - "peptide"
+        - "siRNA"
+        - "gene therapy"
+        - "cell therapy"
+        - "CAR-T"
+        - "vaccine"
+        - "Unknown" (only if you cannot infer the modality)
+
+        "target": Return the HGNC gene symbol or pathway the drug acts on. Examples: "PCSK9", "EGFR", "JAK/STAT".
+        If unknown, return "Unknown".
+
+        **Important**: Think step by step internally, but output only the final JSON — no explanations, no code fences.
+
+        Example:
+        {{
+        "modality": "small-molecule",
+        "target": "PCSK9"
+        }}
+
+        DRUG = "{drug_name}"
+        """
+
+        # Retry logic with exponential backoff
+        retries = 0
+        while retries < 5:
+            try:
+                response = client.models.generate_content(
+                    model=settings.gemini_model,
+                    contents=prompt,
+                    config=GenerateContentConfig(
+                        tools=[google_search_tool],
+                        response_modalities=["TEXT"],
+                        max_output_tokens=1000
+                    )
+                )
+
+                if not response or not response.candidates:
+                    logger.warning(f"No candidate response for {drug_name}")
+                    return None
+
+                content = response.candidates[0].content.parts[0].text.strip()
+                metadata = response.candidates[0].grounding_metadata
+
+                # Extract URI if available
+                uri = None
+                if metadata and getattr(metadata, "grounding_chunks", None):
+                    uri = metadata.grounding_chunks[0].web.uri
+
+                # Parse JSON
+                try:
+                    parsed = json.loads(content)
+                except json.JSONDecodeError:
+                    # Try cleaning up and extracting JSON from raw text
+                    start = content.find("{")
+                    end = content.rfind("}") + 1
+                    json_str = content[start:end]
+                    parsed = json.loads(json_str)
+
+                return {
+                    "name": drug_name,
+                    "modality": parsed.get("modality", "Unknown"),
+                    "target": parsed.get("target", "Unknown"),
+                    "source": "Gemini",
+                    "uri": uri or ""
+                }
+
+            except Exception as e:
+                logger.warning(f"[Gemini Retry {retries}] Error querying {drug_name}: {e}")
+                await asyncio.sleep(2 ** retries + uniform(0.1, 0.5))
+                retries += 1
+
+    except Exception as outer_e:
+        logger.error(f"Fatal error calling Gemini for {drug_name}: {outer_e}")
+        return None
+
+    return None
 
 async def query_gemini_for_drug_info(drug_name: str) -> Optional[Dict[str, str]]:
     """Query Google Gemini to get drug modality and target information.
