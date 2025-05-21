@@ -1035,6 +1035,16 @@ def analyze_trials(
     upload_to_gcs(str(csv_path), f"runs/{timestamp}/top_outcomes_{timestamp}.csv")
     # --- END NEW ---
 
+    # --- Restore plot generation and upload (from old version) ---
+    try:
+        create_plots(df, timestamp=timestamp)
+    except Exception as e:
+        logger.error(f"Error creating plots: {e}")
+    try:
+        generate_static_matplotlib_plots(df, timestamp=timestamp)
+    except Exception as e:
+        logger.error(f"Error generating static plots: {e}")
+
     # --- Restore summary variables for markdown ---
     modalities = get_unique_flat_list(df, 'modalities') if 'modalities' in df.columns else []
     targets = get_unique_flat_list(df, 'targets') if 'targets' in df.columns else []
