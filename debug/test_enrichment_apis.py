@@ -1,5 +1,6 @@
 import sys
-from src.pipeline.enrich import query_chembl_client, query_gemini_for_drug_info
+from src.pipeline.gemini_utils import query_gemini_for_drug_grounded_search
+from src.pipeline.enrich import query_chembl_client
 import requests
 
 # --- Config ---
@@ -17,7 +18,7 @@ def test_enrichment(drug_name):
         gemini_result = None
         try:
             import asyncio
-            gemini_result = asyncio.run(query_gemini_for_drug_info(drug_name))
+            gemini_result = asyncio.run(query_gemini_for_drug_grounded_search(drug_name))
         except Exception as e:
             print(f"Error calling Gemini: {e}")
         print(f"Gemini result: {gemini_result}")

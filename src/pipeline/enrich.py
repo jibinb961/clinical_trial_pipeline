@@ -204,25 +204,28 @@ def query_chembl_client(drug_name: str) -> Optional[Dict[str, str]]:
 
 # --- New: Preprocessing helpers ---
 def preprocess_drug_name(drug_name):
-    # Lowercase for placebo check
-    if 'placebo' in drug_name.lower():
-        return ['placebo'], ['placebo'], ['placebo'], ['placebo']
-    # Remove dosage info (e.g., (90 mg), 10 mg, 5mg, etc.)
-    name = re.sub(r'\([^)]*mg[^)]*\)', '', drug_name)
-    name = re.sub(r'\b\d+\s*mg\b', '', name, flags=re.IGNORECASE)
-    # Remove annotations like (Background Drug), (oral), etc.
-    name = re.sub(r'\([^)]*\)', '', name)
-    name = re.sub(r'\s+', ' ', name).strip()
-    # Split combinations on '+', ' and ', or '/'
-    if '+' in name:
-        parts = [n.strip() for n in name.split('+')]
-    elif ' and ' in name:
-        parts = [n.strip() for n in name.split(' and ')]
-    elif '/' in name:
-        parts = [n.strip() for n in name.split('/')]
-    else:
-        parts = [name]
-    return parts, [drug_name]*len(parts), [name]*len(parts), ['']*len(parts)
+    """
+    Simple preprocessing for enrichment:
+    - Filter out known non-drugs (placebo, vehicle, etc.)
+    - Split on '+' and ';' only
+    - Return same structure as original function: 4 lists
+    """
+    name = drug_name.lower().strip()
+
+    NON_DRUG_TERMS = [
+        "placebo", "vehicle", "normal saline", "background drug",
+        "matching placebo", "formulation only", "reference", "food effect"
+    ]
+
+    # Filter out non-drug terms
+    if any(term in name for term in NON_DRUG_TERMS):
+        return [], [], [], []
+
+    # Split using only '+' and ';'
+    parts = re.split(r'\s*(\+|;)\s*', drug_name)
+    cleaned = [part.strip() for part in parts if part.strip() and part not in ['+', ';']]
+
+    return cleaned, [drug_name] * len(cleaned), [drug_name] * len(cleaned), [''] * len(cleaned)
 
 
 # --- New: Main enrichment function ---
@@ -366,45 +369,46 @@ async def enrich_drugs(drug_names: Set[str]) -> Dict[str, Dict[str, Any]]:
 def apply_enrichment_to_trials(trials_df: pd.DataFrame, drug_info: Dict[str, Dict[str, str]], timestamp: Optional[str] = None) -> pd.DataFrame:
     logger.info("Applying drug enrichment data to trials DataFrame")
     enriched_df = trials_df.copy()
-    if "modalities" not in enriched_df.columns:
-        enriched_df["modalities"] = None
-    if "targets" not in enriched_df.columns:
-        enriched_df["targets"] = None
-    if "enrichment_sources" not in enriched_df.columns:
-        enriched_df["enrichment_sources"] = None
-    if "enrichment_uris" not in enriched_df.columns:
-        enriched_df["enrichment_uris"] = None
-    def extract_enrichment(interventions: list) -> tuple:
-        if not interventions or not isinstance(interventions, list):
-            return [], [], [], []
+    # Ensure all columns exist
+    for col in ["modalities", "targets", "enrichment_sources", "enrichment_uris", "intervention_cleaned"]:
+        if col not in enriched_df.columns:
+            enriched_df[col] = None
+
+    def clean_and_extract_drugs(intervention_names):
+        """Return cleaned drug names (excluding placebos/non-drugs) from intervention_names list."""
+        if not intervention_names or not isinstance(intervention_names, list):
+            return []
+        cleaned = []
+        for name in intervention_names:
+            parts, _, _, _ = preprocess_drug_name(name)
+            for part in parts:
+                if part and 'placebo' not in part.lower() and 'simulant' not in part.lower():
+                    cleaned.append(part)
+        return cleaned
+
+    def get_enrichment_lists(cleaned_drugs):
+        """Return modalities, targets, sources, uris for a list of cleaned drugs."""
         modalities, targets, sources, uris = [], [], [], []
-        for drug in interventions:
+        for drug in cleaned_drugs:
             info = drug_info.get(drug, {"modality": "Unknown", "target": "Unknown", "source": "Unknown", "uri": None})
-            mod = info.get("modality", "Unknown")
-            tar = info.get("target", "Unknown")
-            src = info.get("source", "Unknown")
-            uri = info.get("uri", None)
-            if not isinstance(mod, list):
-                mod = [mod]
-            if not isinstance(tar, list):
-                tar = [tar]
-            if not isinstance(src, list):
-                src = [src]
-            if not isinstance(uri, list):
-                uri = [uri]
-            modalities.append(mod)
-            targets.append(tar)
-            sources.append(src)
-            uris.append(uri)
+            modalities.append(info.get("modality", "Unknown"))
+            targets.append(info.get("target", "Unknown"))
+            sources.append(info.get("source", "Unknown"))
+            uris.append(info.get("uri", None))
         return modalities, targets, sources, uris
+
+    # Main enrichment loop
     for i, row in enriched_df.iterrows():
-        interventions = row.get("intervention_names")
-        if interventions:
-            modalities, targets, sources, uris = extract_enrichment(interventions)
-            enriched_df.at[i, "modalities"] = modalities
-            enriched_df.at[i, "targets"] = targets
-            enriched_df.at[i, "enrichment_sources"] = sources
-            enriched_df.at[i, "enrichment_uris"] = uris
+        intervention_names = row.get("intervention_names")
+        cleaned_drugs = clean_and_extract_drugs(intervention_names)
+        enriched_df.at[i, "intervention_cleaned"] = cleaned_drugs
+        modalities, targets, sources, uris = get_enrichment_lists(cleaned_drugs)
+        enriched_df.at[i, "modalities"] = modalities
+        enriched_df.at[i, "targets"] = targets
+        enriched_df.at[i, "enrichment_sources"] = sources
+        enriched_df.at[i, "enrichment_uris"] = uris
+
+    # Export logic (flatten lists for export)
     def flatten_list_of_lists(lst):
         if not isinstance(lst, list):
             return [lst]
@@ -415,7 +419,7 @@ def apply_enrichment_to_trials(trials_df: pd.DataFrame, drug_info: Dict[str, Dic
             else:
                 flat.append(item)
         return flat
-    for col in ["modalities", "targets", "enrichment_sources", "enrichment_uris"]:
+    for col in ["modalities", "targets", "enrichment_sources", "enrichment_uris", "intervention_cleaned"]:
         if col in enriched_df.columns:
             enriched_df[col] = enriched_df[col].apply(flatten_list_of_lists)
     if timestamp is None:
@@ -426,17 +430,17 @@ def apply_enrichment_to_trials(trials_df: pd.DataFrame, drug_info: Dict[str, Dic
     csv_path = settings.paths.processed_data / f"trials_enriched_{timestamp}.csv"
     enriched_df.to_csv(csv_path, index=False)
     logger.info(f"Saved enriched DataFrame to {output_path} and {csv_path}")
+    # Generate enrichment report CSV
     try:
         rows = []
         for _, row in enriched_df.iterrows():
             nct_id = row.get('nct_id', '')
-            for drug, modality, target, source, uri in zip(
-                row.get('intervention_names', []),
-                row.get('modalities', []),
-                row.get('targets', []),
-                row.get('enrichment_sources', []),
-                row.get('enrichment_uris', [])
-            ):
+            cleaned_drugs = row.get('intervention_cleaned', [])
+            modalities = row.get('modalities', [])
+            targets = row.get('targets', [])
+            sources = row.get('enrichment_sources', [])
+            uris = row.get('enrichment_uris', [])
+            for drug, modality, target, source, uri in zip(cleaned_drugs, modalities, targets, sources, uris):
                 rows.append({
                     "nct_id": nct_id,
                     "drug": drug,

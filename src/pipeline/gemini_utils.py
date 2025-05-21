@@ -18,13 +18,13 @@ from src.pipeline.config import settings
 from src.pipeline.utils import logger
 
     
-async def query_gemini_for_drug_grounded_search(drug_name: str) -> Optional[Dict[str, str]]:
+async def query_gemini_for_drug_grounded_search(drug_name: str, disease: str) -> Optional[Dict[str, str]]:
     """
     Use Google Gemini with grounded search to get drug modality and target.
     
     Args:
         drug_name: Name of the drug to query
-
+        disease: Disease to use as context
     Returns:
         Dictionary with modality, target, source, and grounding URI
     """
@@ -41,38 +41,43 @@ async def query_gemini_for_drug_grounded_search(drug_name: str) -> Optional[Dict
         # Define the Google Search tool
         google_search_tool = Tool(google_search=GoogleSearch())
 
-        # Build the prompt
         prompt = f"""
-        You are a pharmacology expert. Your task is to extract the *modality* and *target* of a drug given its name.
+            You are a pharmacology expert. Your task is to extract the *modality* and *target* of a drug, given its name and context.
 
-        Return a single JSON object with these two keys:
+            Return a single JSON object with these two keys:
 
-        "modality": Choose one of the following strings (case-sensitive):
-        - "small-molecule"
-        - "monoclonal antibody"
-        - "antibody-drug conjugate"
-        - "protein"
-        - "peptide"
-        - "siRNA"
-        - "gene therapy"
-        - "cell therapy"
-        - "CAR-T"
-        - "vaccine"
-        - "Unknown" (only if you cannot infer the modality)
+            "modality": Choose one of the following strings (case-sensitive):
+            - "small-molecule"
+            - "monoclonal antibody"
+            - "antibody-drug conjugate"
+            - "protein"
+            - "peptide"
+            - "siRNA"
+            - "gene therapy"
+            - "cell therapy"
+            - "CAR-T"
+            - "vaccine"
+            - "Unknown" (only if you cannot infer the modality)
 
-        "target": Return the HGNC gene symbol or pathway the drug acts on. Examples: "PCSK9", "EGFR", "JAK/STAT".
-        If unknown, return "Unknown".
+            "target": Return the HGNC gene symbol, protein family, or pathway that the drug acts on. If unknown, return "Unknown".
 
-        **Important**: Think step by step internally, but output only the final JSON — no explanations, no code fences.
+            ⚠️ Guidelines:
+            - If the word *modality* is not explicitly used, infer it from the drug’s chemical structure, pharmacological class, or mechanism of action.
+            - If it’s a combination drug, return the *primary active component*'s modality and target.
+            - Resolve brand names to generic drugs when applicable.
+            - Use the disease as context to improve specificity of target.
 
-        Example:
-        {{
-        "modality": "small-molecule",
-        "target": "PCSK9"
-        }}
+            DRUG = "{drug_name}"
+            DISEASE = "{disease}"
 
-        DRUG = "{drug_name}"
-        """
+            Think step by step internally, but output only the final JSON — no explanations, no markdown, no code blocks.
+
+            Example:
+            {{
+            "modality": "small-molecule",
+            "target": "Androgenic Receptor"
+            }}
+            """
 
         # Retry logic with exponential backoff
         retries = 0
@@ -153,49 +158,6 @@ def generate_pipeline_insights(prompt: str) -> str:
         return response.candidates[0].content.parts[0].text.strip()
     except Exception as e:
         return f"Error generating pipeline insights: {str(e)}"
-
-def cluster_outcomes_with_gemini(outcome_list, outcome_type="primary"):
-    if not settings.api_keys.gemini:
-        return {}
-    client = genai.Client(api_key=settings.api_keys.gemini)
-
-    formatted = [format_outcome_for_llm(o) for o in outcome_list]
-    prompt = f"""
-            You are an expert in clinical trial data curation. Group the following {outcome_type} outcomes:
-
-            {chr(10).join([f"{i+1}. {s}" for i, s in enumerate(formatted)])}
-
-            Output JSON:
-            [
-            {{
-                "canonical": "...",
-                "summary": "...",
-                "originals": ["...", ...]
-            }},
-            ...
-            ]
-            """
-    try:
-        response = client.models.generate_content(
-            model=settings.gemini_model,
-            contents=prompt,
-            config=GenerateContentConfig(max_output_tokens=2048)
-        )
-        content = response.candidates[0].content.parts[0].text.strip()
-        start_idx = content.find('[')
-        end_idx = content.rfind(']') + 1
-        groups = json.loads(content[start_idx:end_idx])
-        mapping = {}
-        for group in groups:
-            for orig in group.get("originals", []):
-                mapping[orig.strip()] = {
-                    "canonical": group.get("canonical", "").strip(),
-                    "summary": group.get("summary", "").strip()
-                }
-        return mapping
-    except Exception as e:
-        logger.warning(f"Gemini clustering error: {e}")
-        return {}
 
 async def batch_query_gemini(drug_names):
     if not settings.api_keys.gemini or not drug_names:

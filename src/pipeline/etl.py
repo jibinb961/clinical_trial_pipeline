@@ -209,8 +209,8 @@ def extract_intervention_names(studies: List[Dict[str, Any]]) -> Set[str]:
     
     # Valid intervention types from API documentation
     valid_types = {
-        "DRUG", "BIOLOGICAL", "DEVICE", "BEHAVIORAL", 
-        "PROCEDURE", "RADIATION", "DIETARY_SUPPLEMENT"
+        "DRUG", "BIOLOGICAL", 
+    "DIETARY_SUPPLEMENT"
     }
     
     for study in studies:
