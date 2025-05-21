@@ -496,10 +496,7 @@ def create_plots(
         return plots
     # Modality-by-Phase Distribution Chart
     try:
-        with tempfile.NamedTemporaryFile(suffix=f"_modality_by_phase_distribution_{timestamp}.html", delete=True) as tmp_html:
-            plot_modality_by_phase_distribution(df, output_dir, timestamp)
-            if os.path.exists(tmp_html.name):
-                upload_to_gcs(tmp_html.name, f"runs/{timestamp}/figures/modality_by_phase_distribution_{timestamp}.html")
+        plot_modality_by_phase_distribution(df, output_dir, timestamp)
     except Exception as e:
         logger.error(f"Error creating modality-by-phase distribution chart: {e}")
     # Stacked area chart of modality shares over time
@@ -765,10 +762,7 @@ def create_plots(
         logger.error(f"Error creating Sankey plot: {e}")
     # Enrollment by Sponsor (Plotly HTML only)
     try:
-        with tempfile.NamedTemporaryFile(suffix=f"_enrollment_by_top_30_sponsors_{timestamp}.html", delete=True) as tmp_html:
-            plot_enrollment_by_sponsor_plotly(df, output_dir, top_n=30, timestamp=timestamp)
-            if os.path.exists(tmp_html.name):
-                upload_to_gcs(tmp_html.name, f"runs/{timestamp}/figures/enrollment_by_top_30_sponsors_{timestamp}.html")
+        plot_enrollment_by_sponsor_plotly(df, output_dir, top_n=30, timestamp=timestamp)
     except Exception as e:
         logger.error(f"Error creating enrollment by sponsor plot: {e}")
     logger.info(f"Created {len(plots)} plots")
