@@ -318,7 +318,7 @@ async def enrich_drugs(drug_names: Set[str]) -> Dict[str, Dict[str, Any]]:
         retries = 0
         while retries < 5:
             try:
-                info = await query_gemini_for_drug_grounded_search(name)
+                info = await query_gemini_for_drug_grounded_search(name, settings.disease)
                 now = time.time()
                 gemini_minute_window.append(now)
                 gemini_100s_window.append(now)
