@@ -990,7 +990,7 @@ def analyze_trials(
             if not any(SequenceMatcher(None, o, d).ratio() > threshold for d in deduped):
                 deduped.append(o)
         return deduped
-    def extract_and_rank_outcomes(df, col, top_n=10):
+    def extract_and_rank_outcomes(df, col, top_n=40):
         from collections import Counter
         all_outcomes = [normalize_outcome(item) for sublist in df[col].dropna() for item in (sublist if isinstance(sublist, list) else [sublist])]
         all_outcomes = [x for x in all_outcomes if x and x != "placebo"]
@@ -1000,11 +1000,11 @@ def analyze_trials(
         top_counts = [(o, counts[o]) for o in deduped]
         return top_counts, deduped
     if 'primary_outcomes' in df.columns:
-        top_primary, deduped_primary = extract_and_rank_outcomes(df, 'primary_outcomes', top_n=10)
+        top_primary, deduped_primary = extract_and_rank_outcomes(df, 'primary_outcomes', top_n=40)
     else:
         top_primary, deduped_primary = [], []
     if 'secondary_outcomes' in df.columns:
-        top_secondary, deduped_secondary = extract_and_rank_outcomes(df, 'secondary_outcomes', top_n=10)
+        top_secondary, deduped_secondary = extract_and_rank_outcomes(df, 'secondary_outcomes', top_n=40)
     else:
         top_secondary, deduped_secondary = [], []
     # Prepare CSV rows
@@ -1373,9 +1373,15 @@ Number of new trials started per year:
 {secondary_outcomes_section}
 
 For the Primary and Secondary Outcomes analysis section, please provide a markdown table for each (primary and secondary) with the following columns:
-- Outcome Category
-- Stricly give the top 5 outcomes for each category.
-- Explanation (briefly describe what this category means in the context of clinical trials)
+- Outcome Category - Categorize each outcome into:
+                - Safety/Tolerability
+                - Pharmacokinetics (PK)
+                - Biomarkers
+                - Efficacy: motor
+                - Efficacy: cognitive
+                - Efficacy: behavioral
+                - Efficacy: QoL
+- Examples (provide 2-3 examples of outcomes in this category)
 
 Do not use bullet points for this section. Use markdown tables only. For all other sections, use markdown with clear sections and bullet points where appropriate.
 """

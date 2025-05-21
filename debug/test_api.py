@@ -22,7 +22,7 @@ from src.pipeline.gemini_utils import query_gemini_for_drug_grounded_search
 
 async def test_gemini_enrichment():
     test_drugs = [
-        ("IMG-007", "Alopecia Areata")
+        ("CKD-498 dose#1", "Alopecia Areata")
     ]
 
     for drug_name, disease in test_drugs:

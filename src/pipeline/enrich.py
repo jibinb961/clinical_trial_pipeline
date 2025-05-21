@@ -22,6 +22,7 @@ from chembl_webresource_client.settings import Settings
 from src.pipeline.config import settings
 from src.pipeline.gemini_utils import query_gemini_for_drug_grounded_search
 from src.pipeline.utils import log_execution_time, logger, retry_async, upload_to_gcs
+from prefect import get_run_logger
 
 import re
 import tempfile
@@ -63,7 +64,8 @@ def get_cached_drug(drug_name: str) -> Optional[Dict[str, str]]:
     Returns:
         Dictionary with modality and target, or None if not in cache
     """
-    logger.info(f"[CACHE] Lookup for drug: '{drug_name}' in cache DB: {settings.cache_db_path}")
+    prefect_logger = get_run_logger()
+    prefect_logger.info(f"[CACHE] Lookup for drug: '{drug_name}' in cache DB: {settings.cache_db_path}")
     with SessionLocal() as session:
         result = session.execute(
             select(DrugCache).where(DrugCache.name == drug_name)
@@ -129,7 +131,8 @@ def cache_drug(
 
         session.commit()
     
-    logger.debug(f"Cached drug: {drug_name} from {source}")
+    prefect_logger = get_run_logger()
+    prefect_logger.debug(f"Cached drug: {drug_name} from {source}")
 
 
 def query_chembl_client(drug_name: str) -> Optional[Dict[str, str]]:
@@ -231,9 +234,10 @@ def preprocess_drug_name(drug_name):
 # --- New: Main enrichment function ---
 @log_execution_time
 async def enrich_drugs(drug_names: Set[str]) -> Dict[str, Dict[str, Any]]:
-    logger.info(f"[CACHE] Using cache DB at: {settings.cache_db_path}")
+    prefect_logger = get_run_logger()
+    prefect_logger.info(f"[CACHE] Using cache DB at: {settings.cache_db_path}")
     setup_drug_cache_db()
-    logger.info(f"Enriching {len(drug_names)} drugs with ChEMBL, then Gemini grounded search fallback")
+    prefect_logger.info(f"Enriching {len(drug_names)} drugs with ChEMBL, then Gemini grounded search fallback")
     chembl_results = {}
     unresolved = set()
     placebo_set = set()
@@ -278,7 +282,7 @@ async def enrich_drugs(drug_names: Set[str]) -> Dict[str, Dict[str, Any]]:
             chembl_results[orig_name] = {"modality": modalities, "target": targets, "source": sources, "uri": uris}
         else:
             if not modalities or not targets or not sources or not uris:
-                logger.warning(
+                prefect_logger.info(
                     f"[ENRICH] Skipping enrichment for '{orig_name}' — "
                     f" Since it is non drug or placebo"
                 )
@@ -311,7 +315,7 @@ async def enrich_drugs(drug_names: Set[str]) -> Dict[str, Dict[str, Any]]:
         return True
     async def wait_for_slot():
         while not await rate_limiter():
-            logger.info("[Gemini] Rate limit hit, waiting...")
+            prefect_logger.info("[Gemini] Rate limit hit, waiting...")
             await asyncio.sleep(5)
     for name in tqdm(unresolved_for_gemini, desc="Gemini grounded search", mininterval=1):
         await wait_for_slot()
@@ -331,7 +335,7 @@ async def enrich_drugs(drug_names: Set[str]) -> Dict[str, Dict[str, Any]]:
                     cache_drug(name, "Unknown", "Unknown", "Gemini", None)
                 break
             except Exception as e:
-                logger.warning(f"[Gemini Retry {retries}] Error for {name}: {e}")
+                prefect_logger.info(f"[Gemini Retry {retries}] Error for {name}: {e}")
                 await asyncio.sleep(2 ** retries + 0.5)
                 retries += 1
     # --- Merge Gemini results into chembl_results ---
@@ -372,12 +376,13 @@ async def enrich_drugs(drug_names: Set[str]) -> Dict[str, Dict[str, Any]]:
                     entry['source'] = 'ChEMBL'
         else:
             chembl_results[orig_name] = {"modality": "Unknown", "target": "Unknown", "source": "Gemini", "uri": None}
-    logger.info(f"Completed enrichment of {len(chembl_results)} drugs")
+    prefect_logger.info(f"Completed enrichment of {len(chembl_results)} drugs")
     return chembl_results
 
 
 def apply_enrichment_to_trials(trials_df: pd.DataFrame, drug_info: Dict[str, Dict[str, str]], timestamp: Optional[str] = None) -> pd.DataFrame:
-    logger.info("Applying drug enrichment data to trials DataFrame")
+    prefect_logger = get_run_logger()
+    prefect_logger.info("Applying drug enrichment data to trials DataFrame")
     enriched_df = trials_df.copy()
     # Ensure all columns exist
     for col in ["modalities", "targets", "enrichment_sources", "enrichment_uris", "intervention_cleaned"]:
@@ -439,7 +444,7 @@ def apply_enrichment_to_trials(trials_df: pd.DataFrame, drug_info: Dict[str, Dic
     enriched_df.to_parquet(output_path, index=False)
     csv_path = settings.paths.processed_data / f"trials_enriched_{timestamp}.csv"
     enriched_df.to_csv(csv_path, index=False)
-    logger.info(f"Saved enriched DataFrame to {output_path} and {csv_path}")
+    prefect_logger.info(f"Saved enriched DataFrame to {output_path} and {csv_path}")
     # Generate enrichment report CSV
     try:
         rows = []
@@ -467,7 +472,7 @@ def apply_enrichment_to_trials(trials_df: pd.DataFrame, drug_info: Dict[str, Dic
         with tempfile.NamedTemporaryFile(suffix=".csv", delete=True) as tmp_csv:
             report_df.to_csv(tmp_csv.name, index=False)
             upload_to_gcs(tmp_csv.name, f"runs/{timestamp}/enrichment_report_{timestamp}.csv")
-        logger.info(f"Saved enrichment report to GCS runs/{timestamp}/enrichment_report_{timestamp}.csv")
+        prefect_logger.info(f"Saved enrichment report to GCS runs/{timestamp}/enrichment_report_{timestamp}.csv")
     except Exception as e:
-        logger.error(f"Error generating enrichment report: {e}")
+        prefect_logger.error(f"Error generating enrichment report: {e}")
     return enriched_df 
