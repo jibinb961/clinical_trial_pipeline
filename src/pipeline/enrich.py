@@ -20,7 +20,7 @@ from chembl_webresource_client.new_client import new_client
 from chembl_webresource_client.settings import Settings
 
 from src.pipeline.config import settings
-from src.pipeline.gemini_utils import query_gemini_for_drug_info, initialize_gemini, batch_query_gemini, query_gemini_for_drug_grounded_search
+from src.pipeline.gemini_utils import query_gemini_for_drug_grounded_search
 from src.pipeline.utils import log_execution_time, logger, retry_async, upload_to_gcs
 
 import re
@@ -200,22 +200,6 @@ def query_chembl_client(drug_name: str) -> Optional[Dict[str, str]]:
     except Exception as e:
         logger.warning(f"Error querying ChEMBL for {drug_name}: {e}")
         return None
-
-
-async def query_gemini(drug_name: str) -> Optional[Dict[str, str]]:
-    """Query Google Gemini to get drug modality and target.
-    
-    Args:
-        drug_name: Name of the drug to query
-        
-    Returns:
-        Dictionary with modality and target or None if not found
-    """
-    # STEP 5: Query Google Gemini API as fallback
-    logger.debug(f"Querying Google Gemini for {drug_name}")
-    
-    # Use our utility function from gemini_utils
-    return await query_gemini_for_drug_info(drug_name)
 
 
 # --- New: Preprocessing helpers ---
