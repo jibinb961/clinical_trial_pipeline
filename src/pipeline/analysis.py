@@ -496,9 +496,10 @@ def create_plots(
         return plots
     # Modality-by-Phase Distribution Chart
     try:
-        plot_modality_by_phase_distribution(df, output_dir, timestamp)
-        local_path = output_dir / f"modality_by_phase_distribution_{timestamp}.html"
-        upload_to_gcs(str(local_path), f"runs/{timestamp}/figures/modality_by_phase_distribution_{timestamp}.html")
+        with tempfile.NamedTemporaryFile(suffix=f"_modality_by_phase_distribution_{timestamp}.html", delete=True) as tmp_html:
+            plot_modality_by_phase_distribution(df, output_dir, timestamp)
+            if os.path.exists(tmp_html.name):
+                upload_to_gcs(tmp_html.name, f"runs/{timestamp}/figures/modality_by_phase_distribution_{timestamp}.html")
     except Exception as e:
         logger.error(f"Error creating modality-by-phase distribution chart: {e}")
     # Stacked area chart of modality shares over time
@@ -537,10 +538,9 @@ def create_plots(
                     )
                 ],
             )
-            plots["modality_over_time"] = fig_modality
-            html_path = output_dir / f"modality_over_time_{timestamp}.html"
-            fig_modality.write_html(html_path)
-            upload_to_gcs(str(html_path), f"runs/{timestamp}/figures/modality_over_time_{timestamp}.html")
+            with tempfile.NamedTemporaryFile(suffix=f"_modality_over_time_{timestamp}.html", delete=True) as tmp_html:
+                fig_modality.write_html(tmp_html.name)
+                upload_to_gcs(tmp_html.name, f"runs/{timestamp}/figures/modality_over_time_{timestamp}.html")
         else:
             logger.warning("Skipping modality over time plot: insufficient data")
     except Exception as e:
@@ -595,10 +595,9 @@ def create_plots(
                         )
                     ],
                 )
-                plots["duration_by_phase"] = fig_duration
-                html_path = output_dir / f"duration_by_phase_{timestamp}.html"
-                fig_duration.write_html(html_path)
-                upload_to_gcs(str(html_path), f"runs/{timestamp}/figures/duration_by_phase_{timestamp}.html")
+                with tempfile.NamedTemporaryFile(suffix=f"_duration_by_phase_{timestamp}.html", delete=True) as tmp_html:
+                    fig_duration.write_html(tmp_html.name)
+                    upload_to_gcs(tmp_html.name, f"runs/{timestamp}/figures/duration_by_phase_{timestamp}.html")
             else:
                 logger.warning("Skipping duration by phase plot: no valid data after filtering")
         else:
@@ -637,10 +636,9 @@ def create_plots(
                         )
                     ],
                 )
-                plots["enrollment_distribution"] = fig_enrollment
-                html_path = output_dir / f"enrollment_distribution_{timestamp}.html"
-                fig_enrollment.write_html(html_path)
-                upload_to_gcs(str(html_path), f"runs/{timestamp}/figures/enrollment_distribution_{timestamp}.html")
+                with tempfile.NamedTemporaryFile(suffix=f"_enrollment_distribution_{timestamp}.html", delete=True) as tmp_html:
+                    fig_enrollment.write_html(tmp_html.name)
+                    upload_to_gcs(tmp_html.name, f"runs/{timestamp}/figures/enrollment_distribution_{timestamp}.html")
             else:
                 logger.warning("Skipping enrollment distribution plot: no valid data after filtering")
         else:
@@ -675,10 +673,9 @@ def create_plots(
                     )
                 ],
             )
-            plots["top_sponsors"] = fig_sponsors
-            html_path = output_dir / f"top_sponsors_{timestamp}.html"
-            fig_sponsors.write_html(html_path)
-            upload_to_gcs(str(html_path), f"runs/{timestamp}/figures/top_sponsors_{timestamp}.html")
+            with tempfile.NamedTemporaryFile(suffix=f"_top_sponsors_{timestamp}.html", delete=True) as tmp_html:
+                fig_sponsors.write_html(tmp_html.name)
+                upload_to_gcs(tmp_html.name, f"runs/{timestamp}/figures/top_sponsors_{timestamp}.html")
         else:
             logger.warning("Skipping top sponsors plot: 'lead_sponsor' column missing or empty.")
     except Exception as e:
@@ -712,10 +709,9 @@ def create_plots(
                     )
                 ],
             )
-            plots["sponsor_activity_over_time"] = fig_sponsor_trend
-            html_path = output_dir / f"sponsor_activity_over_time_{timestamp}.html"
-            fig_sponsor_trend.write_html(html_path)
-            upload_to_gcs(str(html_path), f"runs/{timestamp}/figures/sponsor_activity_over_time_{timestamp}.html")
+            with tempfile.NamedTemporaryFile(suffix=f"_sponsor_activity_over_time_{timestamp}.html", delete=True) as tmp_html:
+                fig_sponsor_trend.write_html(tmp_html.name)
+                upload_to_gcs(tmp_html.name, f"runs/{timestamp}/figures/sponsor_activity_over_time_{timestamp}.html")
         else:
             logger.warning("Skipping sponsor activity over time plot: insufficient data")
     except Exception as e:
@@ -760,19 +756,19 @@ def create_plots(
                 font_size=12,
                 height=700
             )
-            plots["sankey_sponsor_modality_target"] = fig_sankey
-            html_path = output_dir / f"sankey_sponsor_modality_target_{timestamp}.html"
-            fig_sankey.write_html(html_path)
-            upload_to_gcs(str(html_path), f"runs/{timestamp}/figures/sankey_sponsor_modality_target_{timestamp}.html")
+            with tempfile.NamedTemporaryFile(suffix=f"_sankey_sponsor_modality_target_{timestamp}.html", delete=True) as tmp_html:
+                fig_sankey.write_html(tmp_html.name)
+                upload_to_gcs(tmp_html.name, f"runs/{timestamp}/figures/sankey_sponsor_modality_target_{timestamp}.html")
         else:
             logger.warning("Skipping Sankey plot: insufficient data")
     except Exception as e:
         logger.error(f"Error creating Sankey plot: {e}")
     # Enrollment by Sponsor (Plotly HTML only)
     try:
-        plot_enrollment_by_sponsor_plotly(df, output_dir, top_n=30, timestamp=timestamp)
-        html_path = output_dir / f"enrollment_by_top_30_sponsors_{timestamp}.html"
-        upload_to_gcs(str(html_path), f"runs/{timestamp}/figures/enrollment_by_top_30_sponsors_{timestamp}.html")
+        with tempfile.NamedTemporaryFile(suffix=f"_enrollment_by_top_30_sponsors_{timestamp}.html", delete=True) as tmp_html:
+            plot_enrollment_by_sponsor_plotly(df, output_dir, top_n=30, timestamp=timestamp)
+            if os.path.exists(tmp_html.name):
+                upload_to_gcs(tmp_html.name, f"runs/{timestamp}/figures/enrollment_by_top_30_sponsors_{timestamp}.html")
     except Exception as e:
         logger.error(f"Error creating enrollment by sponsor plot: {e}")
     logger.info(f"Created {len(plots)} plots")
@@ -815,9 +811,9 @@ def generate_static_matplotlib_plots(
                 plt.xticks(rotation=45, ha="right")
                 plt.figtext(0.5, 0.01, caption, ha="center", fontsize=9)
                 plt.tight_layout()
-                png_path = output_dir / f"top_modalities_{timestamp}.png"
-                plt.savefig(png_path, dpi=300)
-                upload_to_gcs(str(png_path), f"runs/{timestamp}/figures/top_modalities_{timestamp}.png")
+                with tempfile.NamedTemporaryFile(suffix=f"_top_modalities_{timestamp}.png", delete=True) as tmp_png:
+                    plt.savefig(tmp_png.name, dpi=300)
+                    upload_to_gcs(tmp_png.name, f"runs/{timestamp}/figures/top_modalities_{timestamp}.png")
                 plt.close()
             else:
                 logger.warning("Skipping top modalities plot: no valid data after filtering")
@@ -846,9 +842,9 @@ def generate_static_matplotlib_plots(
                 plt.title("Distribution of Trial Phases")
                 plt.figtext(0.5, 0.01, caption, ha="center", fontsize=9)
                 plt.tight_layout()
-                png_path = output_dir / f"phase_distribution_{timestamp}.png"
-                plt.savefig(png_path, dpi=300)
-                upload_to_gcs(str(png_path), f"runs/{timestamp}/figures/phase_distribution_{timestamp}.png")
+                with tempfile.NamedTemporaryFile(suffix=f"_phase_distribution_{timestamp}.png", delete=True) as tmp_png:
+                    plt.savefig(tmp_png.name, dpi=300)
+                    upload_to_gcs(tmp_png.name, f"runs/{timestamp}/figures/phase_distribution_{timestamp}.png")
                 plt.close()
             else:
                 logger.warning("Skipping phase distribution plot: no valid data after filtering")
@@ -870,9 +866,9 @@ def generate_static_matplotlib_plots(
                 plt.ylabel("Target")
                 plt.figtext(0.5, 0.01, caption, ha="center", fontsize=9)
                 plt.tight_layout()
-                png_path = output_dir / f"top_targets_{timestamp}.png"
-                plt.savefig(png_path, dpi=300)
-                upload_to_gcs(str(png_path), f"runs/{timestamp}/figures/top_targets_{timestamp}.png")
+                with tempfile.NamedTemporaryFile(suffix=f"_top_targets_{timestamp}.png", delete=True) as tmp_png:
+                    plt.savefig(tmp_png.name, dpi=300)
+                    upload_to_gcs(tmp_png.name, f"runs/{timestamp}/figures/top_targets_{timestamp}.png")
                 plt.close()
             else:
                 logger.warning("Skipping top targets plot: no valid data after filtering")
