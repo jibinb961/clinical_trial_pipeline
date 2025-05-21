@@ -991,6 +991,7 @@ def analyze_trials(
                 deduped.append(o)
         return deduped
     def extract_and_rank_outcomes(df, col, top_n=10):
+        from collections import Counter
         all_outcomes = [normalize_outcome(item) for sublist in df[col].dropna() for item in (sublist if isinstance(sublist, list) else [sublist])]
         all_outcomes = [x for x in all_outcomes if x and x != "placebo"]
         counts = Counter(all_outcomes)

@@ -279,8 +279,8 @@ async def enrich_drugs(drug_names: Set[str]) -> Dict[str, Dict[str, Any]]:
         else:
             if not modalities or not targets or not sources or not uris:
                 logger.warning(
-                    f"[ENRICH] Missing enrichment data for '{orig_name}' — "
-                    f"modalities: {modalities}, targets: {targets}, sources: {sources}, uris: {uris}. Defaulting to 'Unknown'."
+                    f"[ENRICH] Skipping enrichment for '{orig_name}' — "
+                    f" Since it is non drug or placebo"
                 )
             chembl_results[orig_name] = {
                 "modality": modalities[0] if modalities else "Unknown",
