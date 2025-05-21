@@ -277,7 +277,17 @@ async def enrich_drugs(drug_names: Set[str]) -> Dict[str, Dict[str, Any]]:
         if len(parts) > 1:
             chembl_results[orig_name] = {"modality": modalities, "target": targets, "source": sources, "uri": uris}
         else:
-            chembl_results[orig_name] = {"modality": modalities[0], "target": targets[0], "source": sources[0], "uri": uris[0]}
+            if not modalities or not targets or not sources or not uris:
+                logger.warning(
+                    f"[ENRICH] Missing enrichment data for '{orig_name}' — "
+                    f"modalities: {modalities}, targets: {targets}, sources: {sources}, uris: {uris}. Defaulting to 'Unknown'."
+                )
+            chembl_results[orig_name] = {
+                "modality": modalities[0] if modalities else "Unknown",
+                "target": targets[0] if targets else "Unknown",
+                "source": sources[0] if sources else "Unknown",
+                "uri": uris[0] if uris else None
+            }
     # --- Gemini grounded search fallback ---
     unresolved_for_gemini = [name for name in unresolved if 'placebo' not in name.lower() and 'simulant' not in name.lower()]
     # --- Gemini API rate limiting ---
