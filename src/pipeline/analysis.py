@@ -25,7 +25,7 @@ from src.pipeline.utils import upload_to_gcs
 
 from src.pipeline.config import settings
 from src.pipeline.utils import get_timestamp, log_execution_time, logger
-from src.pipeline.gemini_utils import cluster_outcomes_with_gemini, categorize_primary_and_secondary_outcomes_with_gemini
+from src.pipeline.gemini_utils import generate_pipeline_insights
 
 
 def get_year_from_date(date_str: Optional[str]) -> Optional[int]:
@@ -497,8 +497,6 @@ def create_plots(
     # Modality-by-Phase Distribution Chart
     try:
         plot_modality_by_phase_distribution(df, output_dir, timestamp)
-        local_path = output_dir / f"modality_by_phase_distribution_{timestamp}.html"
-        upload_to_gcs(str(local_path), f"runs/{timestamp}/figures/modality_by_phase_distribution_{timestamp}.html")
     except Exception as e:
         logger.error(f"Error creating modality-by-phase distribution chart: {e}")
     # Stacked area chart of modality shares over time
@@ -537,10 +535,9 @@ def create_plots(
                     )
                 ],
             )
-            plots["modality_over_time"] = fig_modality
-            html_path = output_dir / f"modality_over_time_{timestamp}.html"
-            fig_modality.write_html(html_path)
-            upload_to_gcs(str(html_path), f"runs/{timestamp}/figures/modality_over_time_{timestamp}.html")
+            with tempfile.NamedTemporaryFile(suffix=f"_modality_over_time_{timestamp}.html", delete=True) as tmp_html:
+                fig_modality.write_html(tmp_html.name)
+                upload_to_gcs(tmp_html.name, f"runs/{timestamp}/figures/modality_over_time_{timestamp}.html")
         else:
             logger.warning("Skipping modality over time plot: insufficient data")
     except Exception as e:
@@ -595,10 +592,9 @@ def create_plots(
                         )
                     ],
                 )
-                plots["duration_by_phase"] = fig_duration
-                html_path = output_dir / f"duration_by_phase_{timestamp}.html"
-                fig_duration.write_html(html_path)
-                upload_to_gcs(str(html_path), f"runs/{timestamp}/figures/duration_by_phase_{timestamp}.html")
+                with tempfile.NamedTemporaryFile(suffix=f"_duration_by_phase_{timestamp}.html", delete=True) as tmp_html:
+                    fig_duration.write_html(tmp_html.name)
+                    upload_to_gcs(tmp_html.name, f"runs/{timestamp}/figures/duration_by_phase_{timestamp}.html")
             else:
                 logger.warning("Skipping duration by phase plot: no valid data after filtering")
         else:
@@ -637,10 +633,9 @@ def create_plots(
                         )
                     ],
                 )
-                plots["enrollment_distribution"] = fig_enrollment
-                html_path = output_dir / f"enrollment_distribution_{timestamp}.html"
-                fig_enrollment.write_html(html_path)
-                upload_to_gcs(str(html_path), f"runs/{timestamp}/figures/enrollment_distribution_{timestamp}.html")
+                with tempfile.NamedTemporaryFile(suffix=f"_enrollment_distribution_{timestamp}.html", delete=True) as tmp_html:
+                    fig_enrollment.write_html(tmp_html.name)
+                    upload_to_gcs(tmp_html.name, f"runs/{timestamp}/figures/enrollment_distribution_{timestamp}.html")
             else:
                 logger.warning("Skipping enrollment distribution plot: no valid data after filtering")
         else:
@@ -675,10 +670,9 @@ def create_plots(
                     )
                 ],
             )
-            plots["top_sponsors"] = fig_sponsors
-            html_path = output_dir / f"top_sponsors_{timestamp}.html"
-            fig_sponsors.write_html(html_path)
-            upload_to_gcs(str(html_path), f"runs/{timestamp}/figures/top_sponsors_{timestamp}.html")
+            with tempfile.NamedTemporaryFile(suffix=f"_top_sponsors_{timestamp}.html", delete=True) as tmp_html:
+                fig_sponsors.write_html(tmp_html.name)
+                upload_to_gcs(tmp_html.name, f"runs/{timestamp}/figures/top_sponsors_{timestamp}.html")
         else:
             logger.warning("Skipping top sponsors plot: 'lead_sponsor' column missing or empty.")
     except Exception as e:
@@ -712,10 +706,9 @@ def create_plots(
                     )
                 ],
             )
-            plots["sponsor_activity_over_time"] = fig_sponsor_trend
-            html_path = output_dir / f"sponsor_activity_over_time_{timestamp}.html"
-            fig_sponsor_trend.write_html(html_path)
-            upload_to_gcs(str(html_path), f"runs/{timestamp}/figures/sponsor_activity_over_time_{timestamp}.html")
+            with tempfile.NamedTemporaryFile(suffix=f"_sponsor_activity_over_time_{timestamp}.html", delete=True) as tmp_html:
+                fig_sponsor_trend.write_html(tmp_html.name)
+                upload_to_gcs(tmp_html.name, f"runs/{timestamp}/figures/sponsor_activity_over_time_{timestamp}.html")
         else:
             logger.warning("Skipping sponsor activity over time plot: insufficient data")
     except Exception as e:
@@ -760,10 +753,9 @@ def create_plots(
                 font_size=12,
                 height=700
             )
-            plots["sankey_sponsor_modality_target"] = fig_sankey
-            html_path = output_dir / f"sankey_sponsor_modality_target_{timestamp}.html"
-            fig_sankey.write_html(html_path)
-            upload_to_gcs(str(html_path), f"runs/{timestamp}/figures/sankey_sponsor_modality_target_{timestamp}.html")
+            with tempfile.NamedTemporaryFile(suffix=f"_sankey_sponsor_modality_target_{timestamp}.html", delete=True) as tmp_html:
+                fig_sankey.write_html(tmp_html.name)
+                upload_to_gcs(tmp_html.name, f"runs/{timestamp}/figures/sankey_sponsor_modality_target_{timestamp}.html")
         else:
             logger.warning("Skipping Sankey plot: insufficient data")
     except Exception as e:
@@ -771,8 +763,6 @@ def create_plots(
     # Enrollment by Sponsor (Plotly HTML only)
     try:
         plot_enrollment_by_sponsor_plotly(df, output_dir, top_n=30, timestamp=timestamp)
-        html_path = output_dir / f"enrollment_by_top_30_sponsors_{timestamp}.html"
-        upload_to_gcs(str(html_path), f"runs/{timestamp}/figures/enrollment_by_top_30_sponsors_{timestamp}.html")
     except Exception as e:
         logger.error(f"Error creating enrollment by sponsor plot: {e}")
     logger.info(f"Created {len(plots)} plots")
@@ -815,9 +805,9 @@ def generate_static_matplotlib_plots(
                 plt.xticks(rotation=45, ha="right")
                 plt.figtext(0.5, 0.01, caption, ha="center", fontsize=9)
                 plt.tight_layout()
-                png_path = output_dir / f"top_modalities_{timestamp}.png"
-                plt.savefig(png_path, dpi=300)
-                upload_to_gcs(str(png_path), f"runs/{timestamp}/figures/top_modalities_{timestamp}.png")
+                with tempfile.NamedTemporaryFile(suffix=f"_top_modalities_{timestamp}.png", delete=True) as tmp_png:
+                    plt.savefig(tmp_png.name, dpi=300)
+                    upload_to_gcs(tmp_png.name, f"runs/{timestamp}/figures/top_modalities_{timestamp}.png")
                 plt.close()
             else:
                 logger.warning("Skipping top modalities plot: no valid data after filtering")
@@ -846,9 +836,9 @@ def generate_static_matplotlib_plots(
                 plt.title("Distribution of Trial Phases")
                 plt.figtext(0.5, 0.01, caption, ha="center", fontsize=9)
                 plt.tight_layout()
-                png_path = output_dir / f"phase_distribution_{timestamp}.png"
-                plt.savefig(png_path, dpi=300)
-                upload_to_gcs(str(png_path), f"runs/{timestamp}/figures/phase_distribution_{timestamp}.png")
+                with tempfile.NamedTemporaryFile(suffix=f"_phase_distribution_{timestamp}.png", delete=True) as tmp_png:
+                    plt.savefig(tmp_png.name, dpi=300)
+                    upload_to_gcs(tmp_png.name, f"runs/{timestamp}/figures/phase_distribution_{timestamp}.png")
                 plt.close()
             else:
                 logger.warning("Skipping phase distribution plot: no valid data after filtering")
@@ -870,9 +860,9 @@ def generate_static_matplotlib_plots(
                 plt.ylabel("Target")
                 plt.figtext(0.5, 0.01, caption, ha="center", fontsize=9)
                 plt.tight_layout()
-                png_path = output_dir / f"top_targets_{timestamp}.png"
-                plt.savefig(png_path, dpi=300)
-                upload_to_gcs(str(png_path), f"runs/{timestamp}/figures/top_targets_{timestamp}.png")
+                with tempfile.NamedTemporaryFile(suffix=f"_top_targets_{timestamp}.png", delete=True) as tmp_png:
+                    plt.savefig(tmp_png.name, dpi=300)
+                    upload_to_gcs(tmp_png.name, f"runs/{timestamp}/figures/top_targets_{timestamp}.png")
                 plt.close()
             else:
                 logger.warning("Skipping top targets plot: no valid data after filtering")
@@ -946,7 +936,7 @@ def analyze_trials(
             json.dump(empty_stats, f, indent=2)
             
         return empty_stats, empty_insights
-        
+    
     # Generate summary statistics
     try:
         summary_stats = generate_summary_statistics(df)
@@ -973,13 +963,83 @@ def analyze_trials(
     if 'minimum_age' in df.columns and 'maximum_age' in df.columns:
         plot_age_quartiles_box(df, output_dir, timestamp)
     plot_enrollment_quartiles_box(df, output_dir, timestamp)
-    # Outcomes
-    # No LLM-based clustering or canonicalization; just keep the raw outcomes
-    primary_cluster_mapping = None
-    secondary_cluster_mapping = None
     # --- END NEW ---
 
-    # Restore summary variables for markdown
+    # --- Outcome ranking and CSV output ---
+    def normalize_outcome(text):
+        if not isinstance(text, str):
+            return ""
+        text = text.lower()
+        text = re.sub(r"[\W_]+", " ", text)
+        text = text.strip()
+        return text
+    def fuzzy_dedupe(outcomes, threshold=0.85):
+        from difflib import SequenceMatcher
+        deduped = []
+        for o in outcomes:
+            if not any(SequenceMatcher(None, o, d).ratio() > threshold for d in deduped):
+                deduped.append(o)
+        return deduped
+    def extract_and_rank_outcomes(df, col, top_n=40):
+        from collections import Counter
+        all_outcomes = [normalize_outcome(item) for sublist in df[col].dropna() for item in (sublist if isinstance(sublist, list) else [sublist])]
+        all_outcomes = [x for x in all_outcomes if x and x != "placebo"]
+        counts = Counter(all_outcomes)
+        ranked = counts.most_common(top_n * 2)  # get more for deduping
+        deduped = fuzzy_dedupe([x[0] for x in ranked])[:top_n]
+        top_counts = [(o, counts[o]) for o in deduped]
+        return top_counts, deduped
+    if 'primary_outcomes' in df.columns:
+        top_primary, deduped_primary = extract_and_rank_outcomes(df, 'primary_outcomes', top_n=40)
+    else:
+        top_primary, deduped_primary = [], []
+    if 'secondary_outcomes' in df.columns:
+        top_secondary, deduped_secondary = extract_and_rank_outcomes(df, 'secondary_outcomes', top_n=40)
+    else:
+        top_secondary, deduped_secondary = [], []
+    # Prepare CSV rows
+    rows = []
+    for _, row in df.iterrows():
+        nct_id = row.get('nct_id', '')
+        brief_title = row.get('brief_title', '')
+        for outcome in (row.get('primary_outcomes', []) or []):
+            norm = normalize_outcome(outcome)
+            if norm in deduped_primary:
+                rows.append({
+                    'nct_id': nct_id,
+                    'brief_title': brief_title,
+                    'type': 'primary',
+                    'outcome': outcome
+                })
+        for outcome in (row.get('secondary_outcomes', []) or []):
+            norm = normalize_outcome(outcome)
+            if norm in deduped_secondary:
+                rows.append({
+                    'nct_id': nct_id,
+                    'brief_title': brief_title,
+                    'type': 'secondary',
+                    'outcome': outcome
+                })
+    import csv
+    csv_path = settings.paths.processed_data / f"top_outcomes_{timestamp}.csv"
+    with open(csv_path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=['nct_id', 'brief_title', 'type', 'outcome'])
+        writer.writeheader()
+        writer.writerows(rows)
+    upload_to_gcs(str(csv_path), f"runs/{timestamp}/top_outcomes_{timestamp}.csv")
+    # --- END NEW ---
+
+    # --- Restore plot generation and upload (from old version) ---
+    try:
+        create_plots(df, timestamp=timestamp)
+    except Exception as e:
+        logger.error(f"Error creating plots: {e}")
+    try:
+        generate_static_matplotlib_plots(df, timestamp=timestamp)
+    except Exception as e:
+        logger.error(f"Error generating static plots: {e}")
+
+    # --- Restore summary variables for markdown ---
     modalities = get_unique_flat_list(df, 'modalities') if 'modalities' in df.columns else []
     targets = get_unique_flat_list(df, 'targets') if 'targets' in df.columns else []
     sponsors = get_unique_sponsors(df)
@@ -1001,70 +1061,15 @@ def analyze_trials(
     secondary_outcomes = _flatten_outcomes(df, 'secondary_outcomes') if 'secondary_outcomes' in df.columns else []
     # --- END NEW ---
 
-    # Categorize outcomes with Gemini (now using combined function)
-    categorized_outcomes = categorize_primary_and_secondary_outcomes_with_gemini(primary_outcomes, secondary_outcomes)
-    # Grouped bar plot for categories (primary vs secondary)
-    if categorized_outcomes:
-        df_cat = pd.DataFrame(categorized_outcomes)
-        if not df_cat.empty:
-            counts = df_cat.groupby(['category', 'type']).size().reset_index(name='count')
-            fig_cat = px.bar(
-                counts,
-                x='category',
-                y='count',
-                color='type',
-                barmode='group',
-                labels={'category': 'Category', 'count': 'Count', 'type': 'Outcome Type'},
-                title='Primary and Secondary Outcomes by Category (Grouped)'
-            )
-            fig_cat.write_html(settings.paths.figures / f"outcomes_by_category_grouped_{timestamp}.html")
-    # Group categorized outcomes for LLM insights
-    def group_outcomes_by_category(categorized_outcomes):
-        grouped = defaultdict(lambda: defaultdict(list))
-        for item in categorized_outcomes:
-            grouped[item['type']][item['category']].append(item['outcome'])
-        return grouped
-    grouped_outcomes = group_outcomes_by_category(categorized_outcomes) if categorized_outcomes else None
-
-    # Create plots - catch any exceptions so the pipeline doesn't fail
-    try:
-        plots = create_plots(df, timestamp=timestamp)
-    except Exception as e:
-        logger.error(f"Error creating plots: {e}")
-        plots = {}
-    
-    # Create static plots - catch any exceptions
-    try:
-        generate_static_matplotlib_plots(df, timestamp=timestamp)
-    except Exception as e:
-        logger.error(f"Error generating static plots: {e}")
-    
-    # --- NEW: Compose LLM insights section, passing top outcome clusters ---
-    def get_top_clusters(cluster_mapping, top_n=5):
-        if not cluster_mapping:
-            return []
-        # Count cluster label frequencies
-        from collections import Counter
-        labels = [v['canonical'] for v in cluster_mapping.values() if v.get('canonical')]
-        counts = Counter(labels)
-        top = counts.most_common(top_n)
-        # For each top cluster, get example outcomes
-        result = []
-        for label, count in top:
-            examples = [k for k, v in cluster_mapping.items() if v.get('canonical') == label][:3]
-            result.append({'label': label, 'count': count, 'examples': examples})
-        return result
-    top_primary_clusters = get_top_clusters(primary_cluster_mapping)
-    top_secondary_clusters = get_top_clusters(secondary_cluster_mapping)
-    # Pass these to the LLM insights generator
+    # --- LLM insights: pass top 10 normalized outcomes and counts ---
     try:
         insights = generate_llm_insights(
             df,
-            top_primary_clusters=top_primary_clusters,
-            top_secondary_clusters=top_secondary_clusters,
-            primary_outcomes=primary_outcomes,
-            secondary_outcomes=secondary_outcomes,
-            categorized_outcomes=grouped_outcomes
+            top_primary_clusters=[{'label': o, 'count': c, 'examples': [o]} for o, c in top_primary],
+            top_secondary_clusters=[{'label': o, 'count': c, 'examples': [o]} for o, c in top_secondary],
+            primary_outcomes=deduped_primary,
+            secondary_outcomes=deduped_secondary,
+            categorized_outcomes=None
         )
     except Exception as e:
         logger.error(f"Error generating insights: {e}")
@@ -1078,7 +1083,7 @@ def analyze_trials(
         """
     # --- END NEW ---
 
-    # --- NEW: Compose quantitative summary markdown ---
+    # --- Quantitative summary markdown (unchanged) ---
     quantitative_md = f"""
 ## Quantitative Summary (Manual)
 
@@ -1133,7 +1138,7 @@ def analyze_trials(
         f.write(final_insights)
     logger.info(f"Analysis completed and saved to {insights_path}")
 
-    # --- NEW: Always generate treatment details HTML table ---
+    # --- Always generate treatment details HTML table ---
     try:
         generate_treatment_details_table(df, settings.paths.figures, timestamp)
     except Exception as e:
@@ -1368,9 +1373,15 @@ Number of new trials started per year:
 {secondary_outcomes_section}
 
 For the Primary and Secondary Outcomes analysis section, please provide a markdown table for each (primary and secondary) with the following columns:
-- Outcome Category
-- Stricly give the top 5 outcomes for each category.
-- Explanation (briefly describe what this category means in the context of clinical trials)
+- Outcome Category - Categorize each outcome into:
+                - Safety/Tolerability
+                - Pharmacokinetics (PK)
+                - Biomarkers
+                - Efficacy: motor
+                - Efficacy: cognitive
+                - Efficacy: behavioral
+                - Efficacy: QoL
+- Examples (provide 2-3 examples of outcomes in this category)
 
 Do not use bullet points for this section. Use markdown tables only. For all other sections, use markdown with clear sections and bullet points where appropriate.
 """
