@@ -1374,17 +1374,37 @@ Number of new trials started per year:
 
 ### Outcome Analysis – Definitions for Categorization
 
-For the Primary and Secondary Outcomes analysis section, use the following definitions to categorize outcomes:
+For the Primary and Secondary Outcomes analysis section, please perform the following:
+
+---
+
+### Instructions:
+
+- Start with a **2–3 sentence summary** of trends in the outcomes (e.g., whether trials focus mostly on safety, biomarkers, etc.).
+- Then create a **markdown table** for each of Primary and Secondary Outcomes, using the structure below.
+
+---
+
+### Outcome Categories and Definitions:
+
+Use the definitions below to categorize outcomes. Each example in the table should be placed into **only one** category:
 
 - **Safety/Tolerability**: Adverse events, tolerability issues, withdrawals, vital signs, lab values, ECGs.
-- **Pharmacokinetics (PK)**: Drug concentration metrics (Cmax, Tmax, AUC), absorption, half-life.
-- **Biomarkers**: Biological indicators of disease or treatment effect (e.g., mHTT in CSF).
-- **Efficacy: motor**: Movement, coordination, chorea, or motor scores (e.g., UHDRS).
-- **Efficacy: cognitive**: Cognitive function tests or brain imaging (e.g., vMRI, memory tests).
-- **Efficacy: behavioral**: Psychiatric/mood assessments (e.g., C-SSRS).
-- **Efficacy: QoL**: Quality of life, functional status, patient-reported well-being.
+- **Pharmacokinetics (PK)**: Drug concentration metrics (e.g., Cmax, Tmax, AUC), absorption, distribution, metabolism, and elimination.
+- **Biomarkers**: Biological indicators of disease or response to treatment (e.g., mHTT in CSF, cytokine levels).
+- **Efficacy: motor**: Movement, coordination, chorea, tremor assessments (e.g., UHDRS).
+- **Efficacy: cognitive**: Cognitive tests or neuroimaging (e.g., memory recall, vMRI).
+- **Efficacy: behavioral**: Mood/psychiatric indicators (e.g., depression scales, C-SSRS).
+- **Efficacy: QoL**: Functional independence, daily activity, fatigue, or subjective well-being (e.g., EQ-5D).
+- **Efficacy: general**: Core disease severity or symptom measures that don’t fit other subtypes (e.g., tumor size, blood pressure, hair regrowth, SALT score).
 
-Please avoid listing the same example in both primary and secondary tables. If an outcome cannot be clearly categorized, explain briefly in a footnote.
+
+### Formatting Rules:
+
+- Use **markdown tables** only.
+- Do **not** use bullet points or quotation formatting inside the table.
+- Include **2–3 unique examples** per category, and avoid duplicate phrases.
+- If any outcome is unclear or does not fit the above categories, add a footnote after the table explaining your reasoning.
 
 ### Primary Outcomes
 
