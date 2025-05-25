@@ -1372,18 +1372,39 @@ Number of new trials started per year:
 
 {secondary_outcomes_section}
 
-For the Primary and Secondary Outcomes analysis section, please provide a markdown table for each (primary and secondary) with the following columns:
-- Outcome Category - Categorize each outcome into:
-                - Safety/Tolerability
-                - Pharmacokinetics (PK)
-                - Biomarkers
-                - Efficacy: motor
-                - Efficacy: cognitive
-                - Efficacy: behavioral
-                - Efficacy: QoL
-- Examples (provide 2-3 examples of outcomes in this category)
+### Outcome Analysis – Definitions for Categorization
 
-Do not use bullet points for this section. Use markdown tables only. For all other sections, use markdown with clear sections and bullet points where appropriate.
+For the Primary and Secondary Outcomes analysis section, use the following definitions to categorize outcomes:
+
+- **Safety/Tolerability**: Adverse events, tolerability issues, withdrawals, vital signs, lab values, ECGs.
+- **Pharmacokinetics (PK)**: Drug concentration metrics (Cmax, Tmax, AUC), absorption, half-life.
+- **Biomarkers**: Biological indicators of disease or treatment effect (e.g., mHTT in CSF).
+- **Efficacy: motor**: Movement, coordination, chorea, or motor scores (e.g., UHDRS).
+- **Efficacy: cognitive**: Cognitive function tests or brain imaging (e.g., vMRI, memory tests).
+- **Efficacy: behavioral**: Psychiatric/mood assessments (e.g., C-SSRS).
+- **Efficacy: QoL**: Quality of life, functional status, patient-reported well-being.
+
+Please avoid listing the same example in both primary and secondary tables. If an outcome cannot be clearly categorized, explain briefly in a footnote.
+
+### Primary Outcomes
+
+Before the table, write a 2–3 sentence summary of trends in primary outcomes.
+
+Then create a markdown table with:
+
+| Outcome Category | Examples |
+|------------------|----------|
+| ...              | ...      |
+
+### Secondary Outcomes
+
+Before the table, write a 2–3 sentence summary of trends in secondary outcomes.
+
+Then create a markdown table with:
+
+| Outcome Category | Examples |
+|------------------|----------|
+| ...              | ...      |
 """
 
     try:
