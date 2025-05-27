@@ -223,22 +223,6 @@ def generate_yearly_modality_data(
     return pivot_df
 
 
-def generate_sponsor_activity_over_time(df: pd.DataFrame, top_n: int = 30) -> pd.DataFrame:
-    """Generate a DataFrame showing the number of new trials per year for top sponsors."""
-    if 'lead_sponsor' not in df.columns or 'start_date' not in df.columns:
-        return pd.DataFrame()
-    df = df.copy()
-    df['year'] = df['start_date'].apply(get_year_from_date)
-    # Only keep rows with valid year and sponsor
-    df = df.dropna(subset=['year', 'lead_sponsor'])
-    # Get top N sponsors by total trial count
-    top_sponsors = df['lead_sponsor'].value_counts().head(top_n).index
-    df = df[df['lead_sponsor'].isin(top_sponsors)]
-    # Group by year and sponsor
-    sponsor_year = df.groupby(['year', 'lead_sponsor']).size().reset_index(name='count')
-    return sponsor_year
-
-
 def plot_top_sponsors(df: pd.DataFrame, output_dir: Optional[Path] = None, top_n: int = 30, timestamp: Optional[str] = None):
     """Bar chart of top sponsors by number of trials."""
     if 'lead_sponsor' not in df.columns or df['lead_sponsor'].dropna().empty:
@@ -601,47 +585,6 @@ def create_plots(
             logger.warning("Skipping duration by phase plot: required columns missing")
     except Exception as e:
         logger.error(f"Error creating duration by phase plot: {e}")
-    # Histogram of enrollment sizes
-    try:
-        enrollment_column = None
-        for col in ['enrollment', 'enrollment_count']:
-            if col in df.columns:
-                enrollment_column = col
-                break
-        if enrollment_column:
-            enrollment_data = df.dropna(subset=[enrollment_column]).copy()
-            if not enrollment_data.empty:
-                fig_enrollment = px.histogram(
-                    enrollment_data,
-                    x=enrollment_column,
-                    nbins=30,
-                    title="Distribution of Trial Enrollment Sizes",
-                    labels={enrollment_column: "Number of Participants"},
-                )
-                fig_enrollment.update_layout(
-                    autosize=True,
-                    height=600,
-                    annotations=[
-                        dict(
-                            text=caption,
-                            showarrow=False,
-                            xref="paper",
-                            yref="paper",
-                            x=0.5,
-                            y=-0.15,
-                            font=dict(size=10),
-                        )
-                    ],
-                )
-                with tempfile.NamedTemporaryFile(suffix=f"_enrollment_distribution_{timestamp}.html", delete=True) as tmp_html:
-                    fig_enrollment.write_html(tmp_html.name)
-                    upload_to_gcs(tmp_html.name, f"runs/{timestamp}/figures/enrollment_distribution_{timestamp}.html")
-            else:
-                logger.warning("Skipping enrollment distribution plot: no valid data after filtering")
-        else:
-            logger.warning("Skipping enrollment distribution plot: required columns missing")
-    except Exception as e:
-        logger.error(f"Error creating enrollment distribution plot: {e}")
     # Top Sponsors (Plotly)
     try:
         if 'lead_sponsor' in df.columns and not df['lead_sponsor'].dropna().empty:
@@ -677,42 +620,6 @@ def create_plots(
             logger.warning("Skipping top sponsors plot: 'lead_sponsor' column missing or empty.")
     except Exception as e:
         logger.error(f"Error creating top sponsors plot: {e}")
-    # Sponsor activity over time (Plotly)
-    try:
-        sponsor_year = generate_sponsor_activity_over_time(df, top_n=30)
-        if not sponsor_year.empty:
-            fig_sponsor_trend = px.line(
-                sponsor_year,
-                x='year',
-                y='count',
-                color='lead_sponsor',
-                markers=True,
-                title='New Clinical Trials per Year by Top 30 Sponsors',
-                labels={'year': 'Year', 'count': 'Number of New Trials', 'lead_sponsor': 'Sponsor'},
-            )
-            fig_sponsor_trend.update_layout(
-                autosize=True,
-                height=600,
-                legend_title='Sponsor',
-                annotations=[
-                    dict(
-                        text=caption,
-                        showarrow=False,
-                        xref="paper",
-                        yref="paper",
-                        x=0.5,
-                        y=-0.15,
-                        font=dict(size=10),
-                    )
-                ],
-            )
-            with tempfile.NamedTemporaryFile(suffix=f"_sponsor_activity_over_time_{timestamp}.html", delete=True) as tmp_html:
-                fig_sponsor_trend.write_html(tmp_html.name)
-                upload_to_gcs(tmp_html.name, f"runs/{timestamp}/figures/sponsor_activity_over_time_{timestamp}.html")
-        else:
-            logger.warning("Skipping sponsor activity over time plot: insufficient data")
-    except Exception as e:
-        logger.error(f"Error creating sponsor activity over time plot: {e}")
     # Sankey chart (Plotly)
     try:
         sankey_df, top_sponsors, top_modalities, top_targets = generate_sankey_data(df, top_n=30)
