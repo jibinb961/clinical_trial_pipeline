@@ -5,7 +5,7 @@ on:
     branches:
       - main
       - users/jbaby/google_cloud_integration
-      - users/jbaby/adding_grounded_search
+      - users/jbaby/fixing_bugs
     paths-ignore:
       - 'app/**'
       - 'docs/**'
