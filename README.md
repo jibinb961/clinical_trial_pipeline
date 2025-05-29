@@ -237,7 +237,8 @@ clinical_trial_pipeline/
 
 ---
 
-## Contributing
-Contributions are welcome! Please open issues or pull requests for bug fixes, new features, or documentation improvements.
+## License
 
----
+This project is licensed under a custom license for evaluation purposes only.  
+See the [LICENSE](./LICENSE) file for full terms.
+
